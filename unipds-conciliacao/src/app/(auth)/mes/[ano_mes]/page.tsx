@@ -122,13 +122,22 @@ export default function MesPage() {
         alert("Nenhum deal correspondente ao tenant ativo e mês selecionado.");
         return;
       }
-      // Upsert em chunks de 50 (evita timeout com 6 índices na tabela)
+
+      // Full replace: apaga todos os deals existentes do mês antes de inserir.
+      // Garante que deals removidos/movidos no Pipe não fiquem stale no DB.
+      const { error: delError } = await supabase
+        .schema("unipds")
+        .from("pipe_deals")
+        .delete()
+        .eq("tenant_id", tenantId)
+        .eq("ano_mes", ano_mes);
+      if (delError) throw delError;
+
+      // Insert em chunks de 50 (evita timeout com 6 índices na tabela)
       const chunkSize = 50;
       for (let i = 0; i < rowsForTenant.length; i += chunkSize) {
         const chunk = rowsForTenant.slice(i, i + chunkSize);
-        const { error } = await supabase.schema("unipds").from("pipe_deals").upsert(chunk, {
-          onConflict: "tenant_id,pipe_deal_id",
-        });
+        const { error } = await supabase.schema("unipds").from("pipe_deals").insert(chunk);
         if (error) throw error;
       }
       const aviso = unknownFunils.size > 0
