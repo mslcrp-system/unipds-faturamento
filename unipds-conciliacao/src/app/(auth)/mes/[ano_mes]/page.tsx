@@ -18,7 +18,9 @@ type CruzamentoRow = {
   pessoa_nome: string | null;
   voomp_aluno_nome: string | null;
   pipe_valor: number | null;
-  voomp_valor_contrato: number | null;
+  voomp_valor_contrato: number | null;       // líquido recebido (0 para reembolsados)
+  voomp_valor_cobrado_total: number | null;  // bruto cobrado antes de taxas
+  voomp_reembolsado: boolean | null;
   divergencia_classe: string | null;
   divergencia_valor: number | null;
   criterio: string | null;
@@ -89,6 +91,8 @@ export default function MesPage() {
         voomp_aluno_nome: v.aluno_nome,
         pipe_valor: null,
         voomp_valor_contrato: v.voomp_valor_contrato,
+        voomp_valor_cobrado_total: v.voomp_valor_cobrado_total,
+        voomp_reembolsado: v.voomp_reembolsado,
         divergencia_classe: null,
         divergencia_valor: null,
         criterio: null,
@@ -190,12 +194,14 @@ export default function MesPage() {
     return r.status_match === filter;
   });
 
-  const totalPipe = rows.reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
-  const totalVoomp = rows.reduce((s, r) => s + (r.voomp_valor_contrato ?? 0), 0);
-  const casadosPipe = rows.filter((r) => r.status_match === "CASADO").reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
-  const casadosVoomp = rows.filter((r) => r.status_match === "CASADO").reduce((s, r) => s + (r.voomp_valor_contrato ?? 0), 0);
-  const orfaosPipe = rows.filter((r) => r.status_match === "ORFAO_PIPE").reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
-  const orfaosVoomp = rows.filter((r) => r.status_match === "ORFAO_VOOMP").reduce((s, r) => s + (r.voomp_valor_contrato ?? 0), 0);
+  const totalPipe        = rows.reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
+  const totalVoompBruto  = rows.reduce((s, r) => s + (r.voomp_valor_cobrado_total ?? 0), 0);
+  const totalReembolsos  = rows.filter((r) => r.voomp_reembolsado).reduce((s, r) => s + (r.voomp_valor_cobrado_total ?? 0), 0);
+  const totalVoompLiquido = rows.reduce((s, r) => s + (r.voomp_valor_contrato ?? 0), 0);
+  const casadosPipe  = rows.filter((r) => r.status_match === "CASADO").reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
+  const casadosVoomp = rows.filter((r) => r.status_match === "CASADO").reduce((s, r) => s + (r.voomp_valor_cobrado_total ?? 0), 0);
+  const orfaosPipe   = rows.filter((r) => r.status_match === "ORFAO_PIPE").reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
+  const orfaosVoomp  = rows.filter((r) => r.status_match === "ORFAO_VOOMP").reduce((s, r) => s + (r.voomp_valor_cobrado_total ?? 0), 0);
   const fmt = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
   const todasIngestoesOk = ingestao.length >= 1 && ingestao.every((i) => i.status === "COMPLETA");
@@ -317,7 +323,8 @@ export default function MesPage() {
       )}
 
       {!loading && rows.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {/* ── Pipe ── */}
           <Card>
             <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Total Pipe</CardTitle></CardHeader>
             <CardContent>
@@ -325,13 +332,39 @@ export default function MesPage() {
               <p className="text-xs text-muted-foreground mt-0.5">{rows.filter(r => r.pipe_valor != null).length} deals</p>
             </CardContent>
           </Card>
+
+          {/* ── Voomp Bruto ── */}
           <Card>
-            <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Total Voomp</CardTitle></CardHeader>
+            <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Voomp Cobrado</CardTitle></CardHeader>
             <CardContent>
-              <p className="text-xl font-semibold tabular-nums">{fmt(totalVoomp)}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{rows.filter(r => r.voomp_valor_contrato != null).length} contratos</p>
+              <p className="text-xl font-semibold tabular-nums">{fmt(totalVoompBruto)}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{rows.filter(r => r.voomp_valor_cobrado_total != null).length} contratos · bruto s/ taxas</p>
             </CardContent>
           </Card>
+
+          {/* ── Reembolsos ── */}
+          <Card className={totalReembolsos > 0 ? "border-destructive/40 bg-destructive/5" : ""}>
+            <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Reembolsos</CardTitle></CardHeader>
+            <CardContent>
+              <p className={`text-xl font-semibold tabular-nums ${totalReembolsos > 0 ? "text-destructive" : ""}`}>
+                {totalReembolsos > 0 ? `- ${fmt(totalReembolsos)}` : fmt(0)}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {rows.filter(r => r.voomp_reembolsado).length} contrato{rows.filter(r => r.voomp_reembolsado).length !== 1 ? "s" : ""} reembolsado{rows.filter(r => r.voomp_reembolsado).length !== 1 ? "s" : ""}
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* ── Voomp Líquido ── */}
+          <Card>
+            <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Voomp Recebido</CardTitle></CardHeader>
+            <CardContent>
+              <p className="text-xl font-semibold tabular-nums">{fmt(totalVoompLiquido)}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">líquido após taxas e reembolsos</p>
+            </CardContent>
+          </Card>
+
+          {/* ── Casados ── */}
           <Card>
             <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Casados</CardTitle></CardHeader>
             <CardContent>
@@ -339,6 +372,8 @@ export default function MesPage() {
               <p className="text-xs text-muted-foreground mt-0.5">Pipe · Voomp: {fmt(casadosVoomp)}</p>
             </CardContent>
           </Card>
+
+          {/* ── Órfãos ── */}
           <Card className={orfaosPipe + orfaosVoomp > 0 ? "border-warning/50 bg-warning/5" : ""}>
             <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Órfãos</CardTitle></CardHeader>
             <CardContent>
