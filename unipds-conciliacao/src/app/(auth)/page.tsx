@@ -40,7 +40,7 @@ export default function DashboardPage() {
     if (!tenantId) return;
     setLoading(true);
     supabase
-      .schema("unipds")
+      .schema("conciliacao")
       .from("fechamentos_mensais")
       .select("*")
       .eq("tenant_id", tenantId)
@@ -59,7 +59,7 @@ export default function DashboardPage() {
     }
     setCreating(true);
     const { error } = await supabase
-      .schema("unipds")
+      .schema("conciliacao")
       .from("fechamentos_mensais")
       .insert({ tenant_id: tenantId, ano_mes: novoMes, estado: "ABERTO" });
     setCreating(false);

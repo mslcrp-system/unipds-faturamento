@@ -1,26 +1,25 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { TENANTS, tenantById } from "@/lib/tenants";
+import { TENANTS } from "@/lib/tenants";
 import ExcelJS from "exceljs";
 import { createHash } from "node:crypto";
 
 export const runtime = "nodejs";
 
-// Paleta de cores por tipo de pendência
 const COR = {
-  CROSS_TENANT:  { argb: "FFFF4444" }, // vermelho
-  MATERIAL:      { argb: "FFFF8C00" }, // laranja
-  CUPOM_PROVAVEL:{ argb: "FFFFD700" }, // amarelo
-  ORFAO:         { argb: "FFADD8E6" }, // azul claro
-  OK:            { argb: "FFCCFFCC" }, // verde claro
+  MATERIAL:       { argb: "FFFF8C00" },
+  CUPOM_PROVAVEL: { argb: "FFFFD700" },
+  ORFAO:          { argb: "FFADD8E6" },
+  REEMBOLSO:      { argb: "FFFFE4E4" },
+  OK:             { argb: "FFCCFFCC" },
 } as const;
 
 function rowFill(r: any): ExcelJS.Fill | undefined {
-  if (r.cross_tenant)                                     return { type: "pattern", pattern: "solid", fgColor: COR.CROSS_TENANT };
-  if (r.divergencia_classe === "MATERIAL")                return { type: "pattern", pattern: "solid", fgColor: COR.MATERIAL };
-  if (r.divergencia_classe === "CUPOM_PROVAVEL")          return { type: "pattern", pattern: "solid", fgColor: COR.CUPOM_PROVAVEL };
-  if (r.status_match === "ORFAO_PIPE" || r.status_match === "ORFAO_VOOMP" || r.venda_orfa === "SIM")
-                                                          return { type: "pattern", pattern: "solid", fgColor: COR.ORFAO };
+  if (r.voomp_reembolsado)                              return { type: "pattern", pattern: "solid", fgColor: COR.REEMBOLSO };
+  if (r.divergencia_classe === "MATERIAL")              return { type: "pattern", pattern: "solid", fgColor: COR.MATERIAL };
+  if (r.divergencia_classe === "CUPOM_PROVAVEL")        return { type: "pattern", pattern: "solid", fgColor: COR.CUPOM_PROVAVEL };
+  if (r.status_match === "ORFAO_PIPE" || r.status_match === "ORFAO_VOOMP")
+                                                        return { type: "pattern", pattern: "solid", fgColor: COR.ORFAO };
   return undefined;
 }
 
@@ -35,7 +34,7 @@ function addSectionHeader(ws: ExcelJS.Worksheet, label: string, colCount: number
   row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF374151" } };
   row.height = 20;
   ws.mergeCells(row.number, 1, row.number, colCount);
-  ws.addRow([]); // espaço
+  ws.addRow([]);
 }
 
 export async function POST(
@@ -52,256 +51,226 @@ export async function POST(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return new NextResponse("Não autenticado", { status: 401 });
 
-  const [{ data: pipeRows }, { data: voompRows }, { data: fechamento }, { data: tenantInfo }] = await Promise.all([
-    supabase.schema("unipds").from("v_cruzamento_pipe").select("*").eq("tenant_id", tenant_id).eq("ano_mes", ano_mes),
-    supabase.schema("unipds").from("v_cruzamento_voomp").select("*").eq("tenant_id", tenant_id).eq("ano_mes", ano_mes),
-    supabase.schema("unipds").from("fechamentos_mensais").select("*").eq("tenant_id", tenant_id).eq("ano_mes", ano_mes).maybeSingle(),
+  const [{ data: cruzRows }, { data: fechamento }, { data: tenantInfo }] = await Promise.all([
+    supabase.schema("conciliacao").from("v_cruzamento").select("*").eq("tenant_id", tenant_id).eq("ano_mes", ano_mes),
+    supabase.schema("conciliacao").from("fechamentos_mensais").select("*").eq("tenant_id", tenant_id).eq("ano_mes", ano_mes).maybeSingle(),
     supabase.schema("unipds").from("tenants").select("nome,cnpj").eq("tenant_id", tenant_id).single(),
   ]);
 
   if (!fechamento) return new NextResponse("Fechamento não encontrado", { status: 404 });
 
-  const pipe  = (pipeRows  ?? []) as any[];
-  const voomp = (voompRows ?? []) as any[];
+  const rows  = (cruzRows ?? []) as any[];
+  const pipe  = rows.filter((r) => r.status_match !== "ORFAO_VOOMP");
+  const voomp = rows.filter((r) => r.status_match !== "ORFAO_PIPE");
 
-  // Segmentos para a aba Pendências
-  const crossTenant    = pipe.filter(r => r.cross_tenant);
-  const materialPipe   = pipe.filter(r => !r.cross_tenant && r.divergencia_classe === "MATERIAL");
-  const materialVoomp  = voomp.filter(r => !r.cross_tenant && r.divergencia_classe === "MATERIAL");
-  const cupomPipe      = pipe.filter(r => r.divergencia_classe === "CUPOM_PROVAVEL");
-  const orfaosPipe     = pipe.filter(r => r.status_match === "ORFAO_PIPE");
-  const orfaosVoomp    = voomp.filter(r => r.status_match === "ORFAO_VOOMP");
+  const materialRows    = rows.filter((r) => r.divergencia_classe === "MATERIAL");
+  const cupomRows       = rows.filter((r) => r.divergencia_classe === "CUPOM_PROVAVEL");
+  const orfaosPipe      = rows.filter((r) => r.status_match === "ORFAO_PIPE");
+  const orfaosVoomp     = rows.filter((r) => r.status_match === "ORFAO_VOOMP");
+  const reembolsos      = rows.filter((r) => r.voomp_reembolsado);
 
   const wb = new ExcelJS.Workbook();
   wb.creator = "Unipds Conciliação";
   wb.created = new Date();
 
-  // ── Aba 1: Capa ─────────────────────────────────────────────────────────────
+  // ── Aba 1: Capa ──────────────────────────────────────────────────
   const capa = wb.addWorksheet("Capa");
   capa.columns = [{ width: 36 }, { width: 50 }];
 
+  const totalVoompCobrado = rows.reduce((s: number, r: any) => s + (Number(r.voomp_valor_cobrado) || 0), 0);
+  const totalVoompRecebido= rows.reduce((s: number, r: any) => s + (Number(r.voomp_valor_recebido) || 0), 0);
+  const totalReembolsos   = reembolsos.reduce((s: number, r: any) => s + (Number(r.voomp_valor_cobrado) || 0), 0);
+
   const capaData: [string, string, (ExcelJS.Fill | undefined)?][] = [
-    ["Tenant",                  tenantInfo?.nome ?? ""],
-    ["CNPJ",                    tenantInfo?.cnpj ?? ""],
-    ["Mês de competência",      ano_mes],
-    ["Estado fechamento",       fechamento.estado],
-    ["Gerado em",               new Date().toISOString()],
-    ["Gerado por",              user.email ?? user.id],
+    ["Tenant",                     tenantInfo?.nome ?? ""],
+    ["CNPJ",                       tenantInfo?.cnpj ?? ""],
+    ["Mês de competência",         ano_mes],
+    ["Estado fechamento",          fechamento.estado],
+    ["Snapshot Voomp gerado em",   fechamento.snapshot_gerado_em
+      ? new Date(fechamento.snapshot_gerado_em).toLocaleString("pt-BR") : "—"],
+    ["Gerado em",                  new Date().toISOString()],
+    ["Gerado por",                 user.email ?? user.id],
     ["", ""],
     ["── TOTAIS ──", ""],
-    ["Total deals Pipe (Ganho)",       String(pipe.length)],
-    ["Total novos alunos Voomp",       String(voomp.length)],
-    ["Matches automáticos",            String(pipe.filter(r => r.criterio && !["MANUAL","CROSS_TENANT"].includes(r.criterio)).length)],
-    ["Matches manuais",                String(pipe.filter(r => r.criterio === "MANUAL").length)],
+    ["Deals Pipe (Ganho)",         String(pipe.length)],
+    ["Contratos Voomp no snapshot",String(voomp.length)],
+    ["Voomp cobrado (bruto)",      `R$ ${totalVoompCobrado.toFixed(2)}`],
+    ["Voomp recebido (líquido)",   `R$ ${totalVoompRecebido.toFixed(2)}`],
+    ["Reembolsos",                 `- R$ ${totalReembolsos.toFixed(2)}`],
     ["", ""],
     ["── PENDÊNCIAS ──", ""],
-    ["Erros de tenant (deal no produto errado)", String(crossTenant.length),   crossTenant.length    ? { type: "pattern", pattern: "solid", fgColor: COR.CROSS_TENANT   } : undefined],
-    ["Divergências materiais (> 5%)",            String(materialPipe.length + materialVoomp.length), materialPipe.length + materialVoomp.length ? { type: "pattern", pattern: "solid", fgColor: COR.MATERIAL       } : undefined],
-    ["Cupons prováveis (5–20%)",                 String(cupomPipe.length),    cupomPipe.length      ? { type: "pattern", pattern: "solid", fgColor: COR.CUPOM_PROVAVEL  } : undefined],
-    ["Órfãos Pipe (sem aluno Voomp)",            String(orfaosPipe.length),   orfaosPipe.length     ? { type: "pattern", pattern: "solid", fgColor: COR.ORFAO           } : undefined],
-    ["Órfãos Voomp (sem deal Pipe)",             String(orfaosVoomp.length),  orfaosVoomp.length    ? { type: "pattern", pattern: "solid", fgColor: COR.ORFAO           } : undefined],
+    ["Divergências materiais (> 5%)", String(materialRows.length),
+      materialRows.length ? { type: "pattern", pattern: "solid", fgColor: COR.MATERIAL } : undefined],
+    ["Cupons prováveis (5–20%)",      String(cupomRows.length),
+      cupomRows.length    ? { type: "pattern", pattern: "solid", fgColor: COR.CUPOM_PROVAVEL } : undefined],
+    ["Órfãos Pipe (sem contrato Voomp)", String(orfaosPipe.length),
+      orfaosPipe.length   ? { type: "pattern", pattern: "solid", fgColor: COR.ORFAO } : undefined],
+    ["Órfãos Voomp (sem deal Pipe)",    String(orfaosVoomp.length),
+      orfaosVoomp.length  ? { type: "pattern", pattern: "solid", fgColor: COR.ORFAO } : undefined],
+    ["Reembolsos no mês",               String(reembolsos.length),
+      reembolsos.length   ? { type: "pattern", pattern: "solid", fgColor: COR.REEMBOLSO } : undefined],
   ];
 
   capaData.forEach(([k, v, fill]) => {
     const row = capa.addRow([k, v]);
     row.getCell(1).font = { bold: k.startsWith("──") || k === "Tenant" || k === "CNPJ" };
-    if (fill) {
-      row.getCell(1).fill = fill;
-      row.getCell(2).fill = fill;
-    }
+    if (fill) { row.getCell(1).fill = fill; row.getCell(2).fill = fill; }
   });
 
-  // ── Aba 2: Pendências ────────────────────────────────────────────────────────
+  // ── Aba 2: Pendências ─────────────────────────────────────────────
   const sPend = wb.addWorksheet("⚠ Pendências");
-  const NCOLS_PEND = 10;
+  const NCOLS = 9;
 
   function addPendHeader(row: ExcelJS.Row) {
     row.font = { bold: true };
     row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE5E7EB" } };
   }
 
-  // Seção 1 — Erros de tenant
-  if (crossTenant.length > 0) {
-    addSectionHeader(sPend, `ERROS DE TENANT — deal fechado no produto errado (${crossTenant.length})`, NCOLS_PEND);
-    const h = sPend.addRow(["Deal Pipe", "Proprietário", "Funil (errado)", "Nome Pipe", "Nome Voomp", "Tenant Voomp", "Pipe R$", "Voomp R$", "Diferença R$", "Critério match"]);
+  if (materialRows.length > 0) {
+    addSectionHeader(sPend, `DIVERGÊNCIAS MATERIAIS — diferença de valor > 5% (${materialRows.length})`, NCOLS);
+    const h = sPend.addRow(["Deal Pipe", "Nome Pipe", "Nome Voomp", "Produto", "Pipe R$", "Voomp Cobrado", "Diferença R$", "Dif %", "Data pag."]);
     addPendHeader(h);
-    crossTenant.forEach(r => {
-      const row = sPend.addRow([
-        r.pipe_deal_id, r.proprietario, r.funil, r.pessoa_nome, r.voomp_aluno_nome,
-        tenantById(r.voomp_tenant_id)?.curto ?? r.voomp_tenant_id,
-        r.pipe_valor, r.voomp_valor_contrato,
-        r.divergencia_valor,
-        r.criterio,
-      ]);
-      applyFill(row, { type: "pattern", pattern: "solid", fgColor: COR.CROSS_TENANT });
-    });
-    sPend.addRow([]);
-  }
-
-  // Seção 2 — Divergências materiais
-  const todasMateriais = [
-    ...materialPipe.map(r => ({ ...r, _origem: "Pipe" })),
-    ...materialVoomp.map(r => ({ ...r, _origem: "Voomp" })),
-  ];
-  if (todasMateriais.length > 0) {
-    addSectionHeader(sPend, `DIVERGÊNCIAS MATERIAIS — diferença de valor > 5% (${todasMateriais.length})`, NCOLS_PEND);
-    const h = sPend.addRow(["Deal Pipe", "Proprietário", "Nome Pipe", "Nome Voomp", "Pipe R$", "Voomp R$", "Diferença R$", "Dif %", "Tipo cobrança", "Data pagamento"]);
-    addPendHeader(h);
-    todasMateriais.forEach(r => {
+    materialRows.forEach((r: any) => {
       const pct = r.pipe_valor ? ((Math.abs(r.divergencia_valor ?? 0) / r.pipe_valor) * 100).toFixed(1) + "%" : "—";
       const row = sPend.addRow([
-        r.pipe_deal_id ?? "—", r.proprietario ?? "—", r.pessoa_nome ?? r.aluno_nome ?? "—",
-        r.voomp_aluno_nome ?? r.aluno_nome ?? "—",
-        r.pipe_valor ?? "—", r.voomp_valor_contrato ?? "—",
-        r.divergencia_valor, pct,
-        r.tipo_cobranca ?? "—", r.voomp_data_pagamento ?? r.data_pagamento ?? "—",
+        r.pipe_deal_id ?? "—", r.pessoa_nome ?? "—", r.voomp_aluno_nome ?? "—",
+        r.produto_nome ?? "—", r.pipe_valor ?? "—", r.voomp_valor_cobrado ?? "—",
+        r.divergencia_valor, pct, r.voomp_data_pagamento ?? "—",
       ]);
       applyFill(row, { type: "pattern", pattern: "solid", fgColor: COR.MATERIAL });
     });
     sPend.addRow([]);
   }
 
-  // Seção 3 — Cupons prováveis
-  if (cupomPipe.length > 0) {
-    addSectionHeader(sPend, `CUPONS PROVÁVEIS — diferença entre 5% e 20% (${cupomPipe.length})`, NCOLS_PEND);
-    const h = sPend.addRow(["Deal Pipe", "Proprietário", "Nome Pipe", "Nome Voomp", "Pipe R$", "Voomp R$", "Diferença R$", "Dif %", "Tipo cobrança", "Data pagamento"]);
+  if (cupomRows.length > 0) {
+    addSectionHeader(sPend, `CUPONS PROVÁVEIS — diferença entre 5% e 20% (${cupomRows.length})`, NCOLS);
+    const h = sPend.addRow(["Deal Pipe", "Nome Pipe", "Nome Voomp", "Produto", "Pipe R$", "Voomp Cobrado", "Diferença R$", "Dif %", "Data pag."]);
     addPendHeader(h);
-    cupomPipe.forEach(r => {
+    cupomRows.forEach((r: any) => {
       const pct = r.pipe_valor ? ((Math.abs(r.divergencia_valor ?? 0) / r.pipe_valor) * 100).toFixed(1) + "%" : "—";
       const row = sPend.addRow([
-        r.pipe_deal_id, r.proprietario, r.pessoa_nome, r.voomp_aluno_nome,
-        r.pipe_valor, r.voomp_valor_contrato,
-        r.divergencia_valor, pct,
-        r.tipo_cobranca ?? "—", r.voomp_data_pagamento ?? "—",
+        r.pipe_deal_id, r.pessoa_nome ?? "—", r.voomp_aluno_nome ?? "—",
+        r.produto_nome ?? "—", r.pipe_valor, r.voomp_valor_cobrado,
+        r.divergencia_valor, pct, r.voomp_data_pagamento ?? "—",
       ]);
       applyFill(row, { type: "pattern", pattern: "solid", fgColor: COR.CUPOM_PROVAVEL });
     });
     sPend.addRow([]);
   }
 
-  // Seção 4 — Órfãos Pipe
   if (orfaosPipe.length > 0) {
-    addSectionHeader(sPend, `ÓRFÃOS PIPE — deal sem aluno Voomp correspondente (${orfaosPipe.length})`, NCOLS_PEND);
-    const h = sPend.addRow(["Deal Pipe", "Proprietário", "Funil", "Nome Pipe", "CPF", "Email", "Pipe R$", "Ganho em", "", ""]);
+    addSectionHeader(sPend, `ÓRFÃOS PIPE — deal sem contrato Voomp correspondente (${orfaosPipe.length})`, NCOLS);
+    const h = sPend.addRow(["Deal Pipe", "Nome Pipe", "CPF Pipe", "Valor Pipe", "Ganho em", "", "", "", ""]);
     addPendHeader(h);
-    orfaosPipe.forEach(r => {
+    orfaosPipe.forEach((r: any) => {
+      const row = sPend.addRow([r.pipe_deal_id, r.pessoa_nome ?? "—", r.pipe_cpf ?? "—", r.pipe_valor, r.voomp_data_pagamento ?? "—", "", "", "", ""]);
+      applyFill(row, { type: "pattern", pattern: "solid", fgColor: COR.ORFAO });
+    });
+    sPend.addRow([]);
+  }
+
+  if (orfaosVoomp.length > 0) {
+    addSectionHeader(sPend, `ÓRFÃOS VOOMP — contrato sem deal Pipe correspondente (${orfaosVoomp.length})`, NCOLS);
+    const h = sPend.addRow(["Snapshot ID", "Aluno", "CPF", "Produto", "Tipo", "Cobrado", "Recebido", "Data pag.", ""]);
+    addPendHeader(h);
+    orfaosVoomp.forEach((r: any) => {
       const row = sPend.addRow([
-        r.pipe_deal_id, r.proprietario, r.funil, r.pessoa_nome,
-        r.pipe_cpf_clean ?? "—", r.pipe_email_clean ?? "—",
-        r.pipe_valor, r.pipe_ganho_em, "", "",
+        r.snapshot_id, r.voomp_aluno_nome ?? "—", r.voomp_cpf ?? "—",
+        r.produto_nome ?? "—", r.tipo_cobranca ?? "—",
+        r.voomp_valor_cobrado, r.voomp_valor_recebido,
+        r.voomp_data_pagamento ?? "—", "",
       ]);
       applyFill(row, { type: "pattern", pattern: "solid", fgColor: COR.ORFAO });
     });
     sPend.addRow([]);
   }
 
-  // Seção 5 — Órfãos Voomp
-  if (orfaosVoomp.length > 0) {
-    addSectionHeader(sPend, `ÓRFÃOS VOOMP — aluno sem deal Pipe correspondente (${orfaosVoomp.length})`, NCOLS_PEND);
-    const h = sPend.addRow(["Contract ref", "Aluno", "CPF", "Email", "Voomp R$", "Tipo cobrança", "Data pagamento", "Método", "Produto", ""]);
+  if (reembolsos.length > 0) {
+    addSectionHeader(sPend, `REEMBOLSOS — contratos reembolsados no mês (${reembolsos.length})`, NCOLS);
+    const h = sPend.addRow(["Deal Pipe", "Nome Pipe", "Aluno Voomp", "Produto", "Tipo", "Cobrado", "Recebido", "Data pag.", "Status"]);
     addPendHeader(h);
-    orfaosVoomp.forEach(r => {
+    reembolsos.forEach((r: any) => {
       const row = sPend.addRow([
-        r.contract_ref, r.aluno_nome, r.cpf_cnpj ?? "—", r.email_clean ?? "—",
-        r.voomp_valor_contrato, r.tipo_cobranca ?? "—",
-        r.data_pagamento, r.metodo_pagamento ?? "—",
-        r.produto_nome ?? "—", "",
+        r.pipe_deal_id ?? "—", r.pessoa_nome ?? "—", r.voomp_aluno_nome ?? "—",
+        r.produto_nome ?? "—", r.tipo_cobranca ?? "—",
+        r.voomp_valor_cobrado, r.voomp_valor_recebido,
+        r.voomp_data_pagamento ?? "—", r.status_match,
       ]);
-      applyFill(row, { type: "pattern", pattern: "solid", fgColor: COR.ORFAO });
+      applyFill(row, { type: "pattern", pattern: "solid", fgColor: COR.REEMBOLSO });
     });
   }
 
-  // Ajusta largura das colunas da aba Pendências
-  sPend.columns.forEach(col => { col.width = 22; });
+  sPend.columns.forEach((col) => { col.width = 22; });
 
-  // ── Aba 3: Comercial (Pipe) ──────────────────────────────────────────────────
+  // ── Aba 3: Comercial (Pipe) ───────────────────────────────────────
   const sComercial = wb.addWorksheet("Comercial (Pipe)");
   sComercial.columns = [
-    { header: "Pipe Deal ID",               key: "pipe_deal_id",                   width: 12 },
-    { header: "Funil",                      key: "funil",                          width: 16 },
-    { header: "Proprietário",               key: "proprietario",                   width: 20 },
-    { header: "Pessoa",                     key: "pessoa_nome",                    width: 32 },
-    { header: "CPF Pipe",                   key: "pipe_cpf_clean",                 width: 14 },
-    { header: "Ganho em",                   key: "pipe_ganho_em",                  width: 18 },
-    { header: "Valor Pipe",                 key: "pipe_valor",                     width: 12 },
-    { header: "Status match",               key: "status_match",                   width: 14 },
-    { header: "Alerta",                     key: "_alerta",                        width: 18 },
-    { header: "Critério",                   key: "criterio",                       width: 14 },
-    { header: "Confiança",                  key: "confianca",                      width: 10 },
-    { header: "Aluno Voomp",                key: "voomp_aluno_nome",               width: 32 },
-    { header: "Contract ref",               key: "contract_ref",                   width: 22 },
-    { header: "Tipo cobrança",              key: "tipo_cobranca",                  width: 14 },
-    { header: "Valor recebido Voomp (líq.)",key: "voomp_valor_contrato",           width: 22 },
-    { header: "Divergência R$",             key: "divergencia_valor",              width: 14 },
-    { header: "Classe divergência",         key: "divergencia_classe",             width: 18 },
-    { header: "Data pagamento",             key: "voomp_data_pagamento",           width: 14 },
-    { header: "Pendente financeiro",        key: "pendente_financeiro",            width: 18 },
+    { header: "Pipe Deal ID",    key: "pipe_deal_id",          width: 12 },
+    { header: "Pessoa",          key: "pessoa_nome",            width: 32 },
+    { header: "CPF Pipe",        key: "pipe_cpf",               width: 14 },
+    { header: "Valor Pipe",      key: "pipe_valor",             width: 12 },
+    { header: "Status match",    key: "status_match",           width: 14 },
+    { header: "Critério",        key: "criterio",               width: 14 },
+    { header: "Confiança",       key: "confianca",              width: 10 },
+    { header: "Aluno Voomp",     key: "voomp_aluno_nome",       width: 32 },
+    { header: "CPF Voomp",       key: "voomp_cpf",              width: 14 },
+    { header: "Produto",         key: "produto_nome",           width: 28 },
+    { header: "Tipo cobrança",   key: "tipo_cobranca",          width: 14 },
+    { header: "Voomp Cobrado",   key: "voomp_valor_cobrado",    width: 16 },
+    { header: "Voomp Recebido",  key: "voomp_valor_recebido",   width: 16 },
+    { header: "Reembolsado",     key: "voomp_reembolsado",      width: 12 },
+    { header: "Divergência R$",  key: "divergencia_valor",      width: 14 },
+    { header: "Classe diverg.",  key: "divergencia_classe",     width: 18 },
+    { header: "Data pagamento",  key: "voomp_data_pagamento",   width: 14 },
   ];
   sComercial.getRow(1).font = { bold: true };
-  pipe.forEach(r => {
-    const alerta = r.cross_tenant ? "TENANT ERRADO"
-      : r.divergencia_classe === "MATERIAL" ? "DIVERGÊNCIA MATERIAL"
-      : r.divergencia_classe === "CUPOM_PROVAVEL" ? "CUPOM PROVÁVEL"
-      : r.status_match === "ORFAO_PIPE" ? "SEM MATCH VOOMP"
-      : "";
-    const row = sComercial.addRow({ ...r, _alerta: alerta });
+  pipe.forEach((r: any) => {
+    const row = sComercial.addRow(r);
     applyFill(row, rowFill(r));
   });
 
-  // ── Aba 4: Financeiro (Voomp) ────────────────────────────────────────────────
+  // ── Aba 4: Financeiro (Voomp) ─────────────────────────────────────
   const sFin = wb.addWorksheet("Financeiro (Voomp)");
   sFin.columns = [
-    { header: "Contract ref",                    key: "contract_ref",                        width: 22 },
-    { header: "Voomp contrato ID",               key: "voomp_contrato_id",                   width: 18 },
-    { header: "Voomp venda ID 1ª parcela",       key: "voomp_venda_id_primeira_parcela",     width: 24 },
-    { header: "Aluno",                           key: "aluno_nome",                          width: 32 },
-    { header: "CPF",                             key: "cpf_cnpj",                            width: 18 },
-    { header: "Email",                           key: "email_clean",                         width: 28 },
-    { header: "Tipo cobrança",                   key: "tipo_cobranca",                       width: 14 },
-    { header: "Recorrência total",               key: "recorrencia_total",                   width: 14 },
-    { header: "Valor parcela",                   key: "voomp_valor_oferta_parcela",          width: 14 },
-    { header: "Valor recebido (líq.)",           key: "voomp_valor_contrato",                width: 20 },
-    { header: "Valor recebido 1ª parcela",       key: "voomp_valor_recebido_1a_parcela",     width: 20 },
-    { header: "Data pagamento",                  key: "data_pagamento",                      width: 14 },
-    { header: "Método",                          key: "metodo_pagamento",                    width: 14 },
-    { header: "Status match",                    key: "status_match",                        width: 14 },
-    { header: "Alerta",                          key: "_alerta",                             width: 22 },
-    { header: "Pipe deal ID",                    key: "pipe_deal_id",                        width: 12 },
-    { header: "Pipe valor",                      key: "pipe_valor",                          width: 12 },
-    { header: "Critério",                        key: "criterio",                            width: 14 },
-    { header: "Divergência R$",                  key: "divergencia_valor",                   width: 14 },
-    { header: "Classe",                          key: "divergencia_classe",                  width: 16 },
-    { header: "Venda órfã",                      key: "venda_orfa",                          width: 12 },
+    { header: "Snapshot ID",     key: "snapshot_id",            width: 36 },
+    { header: "Contrato Voomp",  key: "voomp_contrato_id",      width: 20 },
+    { header: "Aluno",           key: "voomp_aluno_nome",       width: 32 },
+    { header: "CPF",             key: "voomp_cpf",              width: 18 },
+    { header: "Produto",         key: "produto_nome",           width: 28 },
+    { header: "Tipo cobrança",   key: "tipo_cobranca",          width: 14 },
+    { header: "Cobrado (bruto)", key: "voomp_valor_cobrado",    width: 16 },
+    { header: "Recebido (líq.)", key: "voomp_valor_recebido",   width: 16 },
+    { header: "Reembolsado",     key: "voomp_reembolsado",      width: 12 },
+    { header: "Data pagamento",  key: "voomp_data_pagamento",   width: 14 },
+    { header: "Status match",    key: "status_match",           width: 14 },
+    { header: "Deal Pipe",       key: "pipe_deal_id",           width: 12 },
+    { header: "Critério",        key: "criterio",               width: 14 },
+    { header: "Divergência R$",  key: "divergencia_valor",      width: 14 },
+    { header: "Classe",          key: "divergencia_classe",     width: 16 },
   ];
   sFin.getRow(1).font = { bold: true };
-  voomp.forEach(r => {
-    const alerta = r.cross_tenant ? "TENANT ERRADO"
-      : r.divergencia_classe === "MATERIAL" ? "DIVERGÊNCIA MATERIAL"
-      : r.divergencia_classe === "CUPOM_PROVAVEL" ? "CUPOM PROVÁVEL"
-      : r.status_match === "ORFAO_VOOMP" ? "SEM MATCH PIPE"
-      : "";
-    const row = sFin.addRow({ ...r, _alerta: alerta });
+  voomp.forEach((r: any) => {
+    const row = sFin.addRow(r);
     applyFill(row, rowFill(r));
   });
 
-  // ── Hash + persistência ──────────────────────────────────────────────────────
+  // ── Hash ──────────────────────────────────────────────────────────
   const buffer = await wb.xlsx.writeBuffer();
-  const buf = Buffer.from(buffer);
-  const hash = createHash("sha256").update(buf).digest("hex");
+  const buf    = Buffer.from(buffer);
+  const hash   = createHash("sha256").update(buf).digest("hex");
 
-  const { error: updateError } = await supabase.schema("unipds").from("fechamentos_mensais").update({
-    hash_relatorio: hash,
-    estado: "FECHADO",
-    fechado_em: new Date().toISOString(),
-    fechado_por: user.id,
-    total_pipe_deals: pipe.length,
-    total_voomp_alunos: voomp.length,
-    total_matches: pipe.filter(r => r.status_match === "CASADO").length,
-    total_orfaos_pipe: orfaosPipe.length,
-    total_orfaos_voomp: orfaosVoomp.length,
-  }).eq("fechamento_id", fechamento.fechamento_id);
+  // Fechar mês via RPC (congela fotografia financeira)
+  const { error: fecharError } = await (supabase.schema("conciliacao") as any).rpc("fechar_mes", {
+    p_tenant_id: tenant_id,
+    p_ano_mes:   ano_mes,
+  });
+  if (fecharError) return new NextResponse(`Erro ao fechar: ${fecharError.message}`, { status: 500 });
 
-  if (updateError) return new NextResponse(`Erro ao fechar: ${updateError.message}`, { status: 500 });
+  // Salvar hash no fechamento
+  await supabase.schema("conciliacao").from("fechamentos_mensais")
+    .update({ hash_relatorio: hash })
+    .eq("tenant_id", tenant_id)
+    .eq("ano_mes", ano_mes);
 
   return new NextResponse(buf, {
     status: 200,
