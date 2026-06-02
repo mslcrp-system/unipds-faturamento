@@ -29,6 +29,8 @@ type CruzamentoRow = {
   voomp_cpf:           string | null;
   produto_nome:        string | null;
   tipo_cobranca:       string | null;
+  voomp_venda_id:      string | null;   // ID Venda Voomp (NULL em ORFAO_PIPE)
+  voomp_contrato_id:   string | null;   // ID Contrato Voomp (NULL em venda única)
   link_id:             string | null;
 };
 
@@ -365,7 +367,15 @@ export default function MesPage() {
                         </Badge>
                       </td>
                       <td className="py-2 pr-4 max-w-[180px] truncate" title={r.pessoa_nome ?? ""}>{r.pessoa_nome ?? "—"}</td>
-                      <td className="py-2 pr-4 max-w-[180px] truncate" title={r.voomp_aluno_nome ?? ""}>{r.voomp_aluno_nome ?? "—"}</td>
+                      <td className="py-2 pr-4 max-w-[200px]">
+                        <div className="truncate" title={r.voomp_aluno_nome ?? ""}>{r.voomp_aluno_nome ?? "—"}</div>
+                        {r.voomp_venda_id && (
+                          <div className="text-xs text-muted-foreground font-mono">
+                            venda {r.voomp_venda_id}
+                            {r.voomp_contrato_id ? ` · contrato ${r.voomp_contrato_id}` : ""}
+                          </div>
+                        )}
+                      </td>
                       <td className="py-2 pr-4 text-right tabular-nums">{r.pipe_valor != null ? `R$ ${Number(r.pipe_valor).toFixed(2)}` : "—"}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{r.voomp_valor_cobrado != null ? `R$ ${Number(r.voomp_valor_cobrado).toFixed(2)}` : "—"}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{r.divergencia_valor != null ? `R$ ${Number(r.divergencia_valor).toFixed(2)}` : "—"}</td>

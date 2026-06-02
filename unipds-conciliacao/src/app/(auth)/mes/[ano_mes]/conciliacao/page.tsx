@@ -23,6 +23,8 @@ type OrfaoVoomp = {
   voomp_valor_cobrado: number;
   voomp_data_pagamento:string | null;
   produto_nome:        string | null;
+  voomp_venda_id:      string | null;
+  voomp_contrato_id:   string | null;
 };
 
 export default function ConciliacaoPage() {
@@ -162,6 +164,9 @@ export default function ConciliacaoPage() {
                       <div className="text-right shrink-0">
                         <div className="font-mono tabular-nums">R$ {Number(v.voomp_valor_cobrado).toFixed(2)}</div>
                         <div className="text-xs text-muted-foreground">pago {v.voomp_data_pagamento?.slice(0, 10)}</div>
+                        {v.voomp_venda_id && (
+                          <div className="text-xs text-muted-foreground font-mono">venda {v.voomp_venda_id}</div>
+                        )}
                       </div>
                     </div>
                   </button>
