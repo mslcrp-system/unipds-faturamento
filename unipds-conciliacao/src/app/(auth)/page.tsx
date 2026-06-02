@@ -12,8 +12,8 @@ type Fechamento = {
   fechamento_id: string;
   ano_mes: string;
   estado: "ABERTO" | "EM_REVISAO" | "FECHADO" | "REABERTO";
-  total_pipe_deals: number | null;
-  total_voomp_alunos: number | null;
+  faturamento_pipe_deals: number | null;
+  faturamento_voomp_contratos: number | null;
   total_matches: number | null;
   total_orfaos_pipe: number | null;
   total_orfaos_voomp: number | null;
@@ -110,11 +110,11 @@ export default function DashboardPage() {
                   <div className="flex items-center gap-6 text-sm">
                     <div>
                       <span className="text-muted-foreground">Pipe:</span>{" "}
-                      <span className="font-medium">{f.total_pipe_deals ?? "-"}</span>
+                      <span className="font-medium">{f.faturamento_pipe_deals ?? "-"}</span>
                     </div>
                     <div>
                       <span className="text-muted-foreground">Voomp:</span>{" "}
-                      <span className="font-medium">{f.total_voomp_alunos ?? "-"}</span>
+                      <span className="font-medium">{f.faturamento_voomp_contratos ?? "-"}</span>
                     </div>
                     <div>
                       <span className="text-muted-foreground">Matches:</span>{" "}
