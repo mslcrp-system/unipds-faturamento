@@ -41,6 +41,9 @@ type CruzamentoRow = {
   voomp_tenant_id:     string | null;
   qtd_cobrancas:       number | null;
   vendas_agrupadas:    string[] | null;
+  divergencia_liquido: number | null;   // pd.valor − líquido cheio (semântica do relatório de comissão)
+  registro_bruto:      boolean | null;  // sentinela: deal registrado pelo bruto (esperado: sempre false)
+  voomp_valor_bruto:   number | null;   // bruto cheio; taxa = valor_bruto − valor_cobrado
 };
 
 type PipeImport = {
@@ -68,7 +71,7 @@ type Suspeito = {
   criterio_suspeita: string;
 };
 
-type Filtro = "TODOS" | "CONCILIADO" | "SO_PIPE" | "SO_VOOMP" | "MATERIAL" | "REEMBOLSO";
+type Filtro = "TODOS" | "CONCILIADO" | "SO_PIPE" | "SO_VOOMP" | "MATERIAL" | "REEMBOLSO" | "REGISTRO_BRUTO";
 
 function friendlyError(message: string): string {
   if (message.includes("FECHADO")) {
@@ -291,6 +294,12 @@ export default function MesPage() {
   const orfaosPipeValor     = rows.filter((r) => r.status_match === "ORFAO_PIPE").reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
   const orfaosVoompValor    = rows.filter((r) => r.status_match === "ORFAO_VOOMP" && !r.voomp_reembolsado).reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
   const difPipeVoomp        = totalPipe - totalVoompGerencial;
+  // Sentinela de comissão: excesso = soma das divergências líquidas positivas nos casados
+  const excessoComissao     = casados.reduce((s, r) => s + Math.max(0, r.divergencia_liquido ?? 0), 0);
+  const registroBrutoCount  = rows.filter((r) => r.registro_bruto).length;
+  // Taxa da fotografia = bruto cheio − líquido cheio (só não-reembolsados)
+  const totalTaxas          = rows.filter((r) => !r.voomp_reembolsado)
+    .reduce((s, r) => s + Math.max(0, (r.voomp_valor_bruto ?? r.voomp_valor_cobrado ?? 0) - (r.voomp_valor_cobrado ?? 0)), 0);
 
   const linksPorCriterio = useMemo(() => {
     const m = new Map<string, number>();
@@ -313,6 +322,7 @@ export default function MesPage() {
     SO_VOOMP: orfaosVoompAtivosCount,
     MATERIAL: rows.filter((r) => r.divergencia_classe === "MATERIAL").length,
     REEMBOLSO: reembolsosCount,
+    REGISTRO_BRUTO: registroBrutoCount,
   };
 
   const filtered = useMemo(() => {
@@ -322,6 +332,7 @@ export default function MesPage() {
     else if (filtro === "SO_VOOMP") out = out.filter((r) => r.status_match === "ORFAO_VOOMP" && !r.voomp_reembolsado);
     else if (filtro === "MATERIAL") out = out.filter((r) => r.divergencia_classe === "MATERIAL");
     else if (filtro === "REEMBOLSO") out = out.filter((r) => r.voomp_reembolsado);
+    else if (filtro === "REGISTRO_BRUTO") out = out.filter((r) => r.registro_bruto);
 
     const q = busca.trim().toLowerCase();
     if (q) {
@@ -345,6 +356,7 @@ export default function MesPage() {
     SO_VOOMP: "Só na Voomp",
     MATERIAL: "Materiais",
     REEMBOLSO: "Reembolsos",
+    REGISTRO_BRUTO: "Registro bruto",
   };
 
   function statusBadge(r: CruzamentoRow) {
@@ -544,7 +556,7 @@ export default function MesPage() {
 
       {/* ── Resumo financeiro ─────────────────────────────────────── */}
       {!loading && rows.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
           <Card>
             <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Pipe (comercial)</CardTitle></CardHeader>
             <CardContent>
@@ -557,7 +569,9 @@ export default function MesPage() {
             <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Voomp (fiscal)</CardTitle></CardHeader>
             <CardContent>
               <p className="text-lg font-semibold tabular-nums">{fmtBRL(totalVoompGerencial)}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{voompCount - reembolsosCount} vendas · gerencial</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {voompCount - reembolsosCount} vendas · líquido{totalTaxas > 0 ? ` · taxas ${fmtBRL(totalTaxas)}` : ""}
+              </p>
             </CardContent>
           </Card>
 
@@ -594,6 +608,19 @@ export default function MesPage() {
             <CardContent>
               <p className="text-lg font-semibold tabular-nums">{fmtBRL(orfaosPipeValor + orfaosVoompValor)}</p>
               <p className="text-xs text-muted-foreground mt-0.5">Pipe {fmtBRL(orfaosPipeValor)} · Voomp {fmtBRL(orfaosVoompValor)}</p>
+            </CardContent>
+          </Card>
+
+          {/* Sentinela: comercial deve registrar pelo líquido — esperado R$0 / 0 deals */}
+          <Card className={registroBrutoCount > 0 ? "border-destructive/40 bg-destructive/5" : ""}>
+            <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Base de comissão</CardTitle></CardHeader>
+            <CardContent>
+              <p className={`text-lg font-semibold tabular-nums ${excessoComissao > 0 ? "text-destructive" : ""}`}>
+                {excessoComissao > 0 ? `+ ${fmtBRL(excessoComissao)}` : fmtBRL(0)}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {registroBrutoCount === 0 ? "0 registros em bruto ✓" : `${registroBrutoCount} deal(s) em bruto — ajustar no Pipe`}
+              </p>
             </CardContent>
           </Card>
         </div>
@@ -726,11 +753,18 @@ export default function MesPage() {
                         {r.criterio ? `${CRITERIO_LABEL[r.criterio] ?? r.criterio}${r.confianca ? ` (${r.confianca}%)` : ""}` : "—"}
                       </td>
                       <td className="py-2 pr-4">
-                        {r.divergencia_classe && (
-                          <Badge variant={CLASSE_VARIANT[r.divergencia_classe] ?? "muted"}>
-                            {CLASSE_LABEL[r.divergencia_classe] ?? r.divergencia_classe}
-                          </Badge>
-                        )}
+                        <div className="flex flex-wrap gap-1">
+                          {r.divergencia_classe && (
+                            <Badge variant={CLASSE_VARIANT[r.divergencia_classe] ?? "muted"}>
+                              {CLASSE_LABEL[r.divergencia_classe] ?? r.divergencia_classe}
+                            </Badge>
+                          )}
+                          {r.registro_bruto && (
+                            <Badge variant="destructive" title="Deal registrado pelo valor bruto — comissão deve ser sobre o líquido; ajustar no Pipe">
+                              Registro bruto
+                            </Badge>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

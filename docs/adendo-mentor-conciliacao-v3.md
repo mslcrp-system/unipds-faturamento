@@ -106,6 +106,17 @@ A régua fica monotônica: 0 → IDENTICO · <R$1 → CENTAVOS · <5% → PEQUEN
 
 ## Achado D — Base de comissão: o Pipe deve registrar o LÍQUIDO (regra de negócio nova)
 
+> **STATUS FINAL (2026-06-11, v3.1): REFUTADO pelo mentor — com auditoria nos dados.**
+> 246/265 assinaturas casadas (92,8%) já são IDENTICO contra o **líquido cheio** — o
+> `valor_cobrado` do snapshot para assinatura sempre foi `recebido × recorrência`
+> (ex. 1620157: 433,39 × 12 = 5.200,68; o bruto seria 6.000). A leitura "assinatura
+> registra bruto / ~R$190 mil de gap" foi o segundo artefato de comparação desta
+> análise. **Não existe gap de comissão hoje; sem transição/corte necessário.**
+> O que foi aplicado da spec: `divergencia_liquido` (semântica explícita do relatório
+> de comissão) e `registro_bruto` como **sentinela** (0 hoje — alerta se o comercial
+> passar a registrar errado). `valor_bruto` virou coluna nova no snapshot; a base de
+> matching segue `valor_cobrado` (líquido cheio). Texto abaixo mantido como histórico.
+
 **Regra confirmada pelo usuário (2026-06-11):** o valor correto do deal no Pipe é o **líquido** (valor recebido pela empresa, pós-taxas Voomp), porque a comissão do comercial é paga sobre o líquido. As taxas não são negociáveis.
 
 **Evidência CORRIGIDA (2026-06-11, pós-v3, comparação direta com `unipds.charges`):**
