@@ -40,6 +40,42 @@ export function fmtBRL(v: number): string {
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+/** Normaliza nome para comparação: minúsculas, sem acentos, só letras. */
+export function normalizarNome(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Similaridade entre nomes (0–1): coeficiente de Dice sobre as palavras. */
+export function similaridadeNomes(a: string, b: string): number {
+  const wa = new Set(normalizarNome(a).split(" ").filter((w) => w.length > 1));
+  const wb = new Set(normalizarNome(b).split(" ").filter((w) => w.length > 1));
+  if (wa.size === 0 || wb.size === 0) return 0;
+  let inter = 0;
+  for (const w of wa) if (wb.has(w)) inter++;
+  return (2 * inter) / (wa.size + wb.size);
+}
+
+/**
+ * Score de candidato a vínculo manual (0–1):
+ * 70% similaridade de nome + 30% proximidade de valor.
+ */
+export function scoreCandidato(
+  nomeA: string | null, valorA: number | null,
+  nomeB: string | null, valorB: number | null,
+): number {
+  const nome = similaridadeNomes(nomeA ?? "", nomeB ?? "");
+  const valor =
+    valorA != null && valorB != null && valorA !== 0
+      ? Math.max(0, 1 - Math.abs(valorA - valorB) / Math.abs(valorA))
+      : 0;
+  return 0.7 * nome + 0.3 * valor;
+}
+
 const MESES = [
   "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
   "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
