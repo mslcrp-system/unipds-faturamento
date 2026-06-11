@@ -152,6 +152,38 @@ ALTER TABLE conciliacao.conciliacao_links
 
 ---
 
+## Achado E — Multas de rescisão entrando na fotografia como venda
+
+**Regra de negócio (usuário, 2026-06-11):** multa por saída de aluno **não é venda** — não deve entrar na fotografia de conciliação (o acompanhamento de multas tem consulta própria, fora deste fluxo).
+
+**Evidência:** a fotografia de maio/IA contém **24 multas = R$ 22.826,90**, todas órfãs (multa nunca tem deal no Pipe) — 24 dos 94 "Só na Voomp" são falso-pendência. Histórico: IA 41 multas (R$47,7 mil desde mar/2026), Java 35 (R$41 mil desde ago/2025) — ~R$20–25 mil/mês.
+
+**Produtos envolvidos:** "Multa 20% Pós graduação" e "Multa 20% Extensão" (ambos os tenants). A classificação em `v_produtos_classificados` já marca quase todos como `ADMINISTRATIVO`, **exceto**:
+- `2744e87b-feb7-4223-828b-be3e7bbd2e52` ("Multa 20% Extensão", IA) → classe `OUTRO` — corrigir para `ADMINISTRATIVO`.
+
+**Solução proposta (2 passos):**
+
+```sql
+-- E1. Corrigir a classificação do produto inconsistente (na fonte da
+--     v_produtos_classificados — ajustar conforme a regra da view)
+
+-- E2. Em gerar_snapshot_voomp, excluir produtos administrativos do snapshot:
+--     no CTE base, acrescentar:
+  AND NOT EXISTS (
+    SELECT 1 FROM unipds.v_produtos_classificados vc
+    WHERE vc.product_id = ch.product_id
+      AND vc.classe = 'ADMINISTRATIVO'
+  )
+```
+
+**Atenção — decisão pendente:** o produto "Negociação: Pós-Graduação Java Elite - vlr único" (Java) também está classificado `ADMINISTRATIVO` e seria excluído junto. Renegociação de contrato existente não é venda nova, então a exclusão parece correta — mas confirmar com o usuário antes de aplicar.
+
+**Efeito esperado em maio/IA (após regenerar):** snapshot 845 → **821**, órfãos Voomp 94 → **70**, Voomp gerencial −R$22,8 mil.
+
+**Regeneração:** mesmo procedimento de sempre (delete snapshot maio/IA + limpar `snapshot_gerado_em` + regenerar pela UI + re-rodar cruzamento).
+
+---
+
 ## Função consolidada v3 — `gerar_snapshot_voomp` (Achados A + B)
 
 ```sql
@@ -303,6 +335,7 @@ WHERE tenant_id = 'e717e24d-fb30-4ed0-83d3-bb8ea0b66783' AND ano_mes = '2026-05'
 | B3 | Assinatura: líquido × recorrência (hoje só 1 parcela) | Líquido gerencial simétrico ao bruto |
 | C | Classe PEQUENA (≥R$1 e <5%) na régua + CHECK | MATERIAL volta a significar divergência real |
 | D | `divergencia_liquido` + flag `registro_bruto` no cruzamento (depende de B) | Auditoria da base de comissão — escopo recalibrado: Assinatura (~R$190 mil/mês) + 16 casos Único; vendas Único já registram o líquido |
+| E | Excluir produtos `ADMINISTRATIVO` (multas) do snapshot + corrigir classificação da Multa Extensão/IA | Multa de saída não é venda: limpa 24 falso-órfãos (R$22,8 mil) em maio e ~R$20–25 mil/mês daqui pra frente |
 | — | Regenerar snapshot maio/IA com a v3 | Fechamento de maio sai limpo |
 
 **Nota:** a função v3 deste adendo já corrige B1, B2 e B3 simultaneamente (usa os valores da fonte sem zerar e aplica × recorrência no líquido).
