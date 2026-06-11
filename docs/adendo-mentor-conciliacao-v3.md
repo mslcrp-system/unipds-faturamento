@@ -176,7 +176,7 @@ ALTER TABLE conciliacao.conciliacao_links
   )
 ```
 
-**Atenção — decisão pendente:** o produto "Negociação: Pós-Graduação Java Elite - vlr único" (Java) também está classificado `ADMINISTRATIVO` e seria excluído junto. Renegociação de contrato existente não é venda nova, então a exclusão parece correta — mas confirmar com o usuário antes de aplicar.
+**Decisão CONFIRMADA (usuário, 2026-06-11):** o produto "Negociação: Pós-Graduação Java Elite - vlr único" (Java) também não é venda nova — a exclusão pelo filtro `ADMINISTRATIVO` está correta e aprovada. Sem pendências neste achado.
 
 **Efeito esperado em maio/IA (após regenerar):** snapshot 845 → **821**, órfãos Voomp 94 → **70**, Voomp gerencial −R$22,8 mil.
 
