@@ -17,8 +17,8 @@ type CruzamentoRow = {
   pessoa_nome:         string | null;
   voomp_aluno_nome:    string | null;
   pipe_valor:          number | null;
-  voomp_valor_cobrado: number | null;   // bruto cobrado ao aluno
-  voomp_valor_recebido:number | null;   // líquido após taxas Voomp
+  voomp_valor_cobrado: number | null;   // valor gerencial — base da conciliação (líquido p/ Único; reembolsado = bruto)
+  voomp_valor_recebido:number | null;
   voomp_reembolsado:   boolean | null;
   divergencia_classe:  string | null;
   divergencia_valor:   number | null;
@@ -32,7 +32,17 @@ type CruzamentoRow = {
   voomp_venda_id:      string | null;   // ID Venda Voomp (NULL em ORFAO_PIPE)
   voomp_contrato_id:   string | null;   // ID Contrato Voomp (NULL em venda única)
   link_id:             string | null;
+  qtd_cobrancas:       number | null;   // > 1 = pagamento dividido agrupado
+  vendas_agrupadas:    string[] | null; // IDs das vendas fundidas no agrupamento
 };
+
+// Mensagem amigável para a trava de mês fechado (trigger P0001 do banco)
+function friendlyError(message: string): string {
+  if (message.includes("FECHADO")) {
+    return "Este mês está FECHADO — alterações bloqueadas. A reabertura é feita pelo gestor do banco.";
+  }
+  return `Erro: ${message}`;
+}
 
 export default function MesPage() {
   const { ano_mes } = useParams<{ ano_mes: string }>();
@@ -72,12 +82,38 @@ export default function MesPage() {
     setUploading(true);
     try {
       const text = await file.text();
-      const { rows: parsed, errors, unknownFunils } = parsePipeCsv(text);
+      const { rows: parsed, errors, unknownFunils, totalLinhas } = parsePipeCsv(text);
       const rowsForTenant = parsed.filter((r) => r.tenant_id === tenantId && r.ano_mes === ano_mes);
       if (rowsForTenant.length === 0) {
         alert("Nenhum deal correspondente ao tenant ativo e mês selecionado.");
         return;
       }
+
+      // Auditoria: hash SHA-256 do arquivo + contagens em pipe_imports
+      const hashBuf = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+      const sha256 = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: imp, error: impError } = await supabase
+        .schema("conciliacao")
+        .from("pipe_imports")
+        .insert({
+          tenant_id: tenantId,
+          ano_mes,
+          nome_arquivo: file.name,
+          sha256_hash: sha256,
+          total_linhas_csv: totalLinhas,
+          linhas_importadas: rowsForTenant.length,
+          linhas_descartadas: totalLinhas - rowsForTenant.length,
+          descarte_detalhe: {
+            erros_parser: errors.length,
+            fora_do_tenant_mes: parsed.length - rowsForTenant.length,
+            funis_desconhecidos: [...unknownFunils],
+          },
+          imported_by: user?.id ?? null,
+        })
+        .select("import_id")
+        .single();
+      if (impError) throw impError;
 
       // Full replace: apaga todos os deals existentes do mês antes de inserir.
       const { error: delError } = await supabase
@@ -88,20 +124,25 @@ export default function MesPage() {
         .eq("ano_mes", ano_mes);
       if (delError) throw delError;
 
-      // Insert em chunks de 50
+      // Insert em chunks de 50, cada deal apontando para o import de origem
+      const withImport = rowsForTenant.map((r) => ({ ...r, import_id: imp.import_id }));
       const chunkSize = 50;
-      for (let i = 0; i < rowsForTenant.length; i += chunkSize) {
-        const chunk = rowsForTenant.slice(i, i + chunkSize);
+      for (let i = 0; i < withImport.length; i += chunkSize) {
+        const chunk = withImport.slice(i, i + chunkSize);
         const { error } = await supabase.schema("conciliacao").from("pipe_deals").insert(chunk);
         if (error) throw error;
       }
       const aviso = unknownFunils.size > 0
         ? `\nFunis ignorados (não mapeados): ${[...unknownFunils].join(", ")}`
         : "";
-      alert(`${rowsForTenant.length} deals carregados.${errors.length ? `\n${errors.length} avisos.` : ""}${aviso}`);
+      alert(
+        `${rowsForTenant.length} deals carregados de ${totalLinhas} linhas do CSV.` +
+        `${errors.length ? `\n${errors.length} avisos.` : ""}${aviso}` +
+        `\nHash do arquivo: ${sha256.slice(0, 12)}…`
+      );
       load();
     } catch (e: any) {
-      alert(`Erro: ${e.message}`);
+      alert(friendlyError(e.message));
     } finally {
       setUploading(false);
     }
@@ -122,7 +163,7 @@ export default function MesPage() {
       p_ano_mes: ano_mes,
     });
     setGerandoSnapshot(false);
-    if (error) alert(`Erro: ${error.message}`);
+    if (error) alert(friendlyError(error.message));
     else load();
   }
 
@@ -134,7 +175,7 @@ export default function MesPage() {
       p_ano_mes: ano_mes,
     });
     setRunning(false);
-    if (error) alert(`Erro: ${error.message}`);
+    if (error) alert(friendlyError(error.message));
     else { alert(`Cruzamento concluído. ${data ?? 0} links automáticos gerados.`); load(); }
   }
 
@@ -164,9 +205,9 @@ export default function MesPage() {
   const pipeCount      = rows.filter((r) => r.pipe_valor != null).length;
   const voompCount     = rows.filter((r) => r.voomp_valor_cobrado != null).length;
   const totalPipe      = rows.reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
-  const totalVoompBruto= rows.reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
+  // valor_cobrado = valor gerencial (base de conciliação); reembolsados carregam o bruto e são excluídos do total
+  const totalVoompGerencial = rows.filter((r) => !r.voomp_reembolsado).reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
   const totalReembolsos= rows.filter((r) => r.voomp_reembolsado).reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
-  const totalVoompLiq  = rows.reduce((s, r) => s + (r.voomp_valor_recebido ?? 0), 0);
   const casadosPipe    = rows.filter((r) => r.status_match === "CASADO").reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
   const casadosVoomp   = rows.filter((r) => r.status_match === "CASADO").reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
   const orfaosPipe     = rows.filter((r) => r.status_match === "ORFAO_PIPE").reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
@@ -175,7 +216,8 @@ export default function MesPage() {
 
   const snapshotOk  = !!fechamento?.snapshot_gerado_em;
   const pipeOk      = pipeCount > 0;
-  const prontoParaFechar = snapshotOk && pipeOk;
+  const fechado     = fechamento?.estado === "FECHADO";
+  const prontoParaFechar = snapshotOk && pipeOk && !fechado;
 
   return (
     <div className="space-y-6">
@@ -192,6 +234,18 @@ export default function MesPage() {
         )}
       </div>
 
+      {fechado && (
+        <Card className="border-success/40 bg-success/5">
+          <CardContent className="p-4 text-sm flex items-center gap-2">
+            <CheckCircle className="h-4 w-4 text-green-600 shrink-0" />
+            <span>
+              Mês fechado em {fechamento.fechado_em ? new Date(fechamento.fechado_em).toLocaleString("pt-BR") : "—"} — somente leitura.
+              Upload, snapshot, cruzamento e vínculos estão bloqueados. Reabertura é feita pelo gestor do banco.
+            </span>
+          </CardContent>
+        </Card>
+      )}
+
       {/* ── Passos ─────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* 1. CSV Pipe */}
@@ -205,7 +259,7 @@ export default function MesPage() {
               className="hidden"
               onChange={(e) => { if (e.target.files?.[0]) uploadCsv(e.target.files[0]); e.target.value = ""; }}
             />
-            <Button disabled={uploading} className="w-full" variant="outline" onClick={() => fileInputRef.current?.click()}>
+            <Button disabled={uploading || fechado} className="w-full" variant="outline" onClick={() => fileInputRef.current?.click()}>
               <Upload className="h-4 w-4 mr-2" />{uploading ? "Carregando..." : "Upload CSV"}
             </Button>
             {pipeOk && (
@@ -229,7 +283,7 @@ export default function MesPage() {
               </p>
             ) : (
               <>
-                <Button onClick={gerarSnapshotVoomp} disabled={gerandoSnapshot} className="w-full" variant="outline">
+                <Button onClick={gerarSnapshotVoomp} disabled={gerandoSnapshot || fechado} className="w-full" variant="outline">
                   <Camera className="h-4 w-4 mr-2" />{gerandoSnapshot ? "Gerando..." : "Gerar snapshot"}
                 </Button>
                 <p className="text-xs text-muted-foreground">
@@ -247,7 +301,7 @@ export default function MesPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">3. Cruzamento</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            <Button onClick={rodarCruzamento} disabled={running || !snapshotOk || !pipeOk} className="w-full">
+            <Button onClick={rodarCruzamento} disabled={running || !snapshotOk || !pipeOk || fechado} className="w-full">
               <Play className="h-4 w-4 mr-2" />{running ? "Rodando..." : "Rodar cruzamento"}
             </Button>
             <Button
@@ -258,7 +312,7 @@ export default function MesPage() {
             >
               <Download className="h-4 w-4 mr-2" />{exporting ? "Gerando..." : "Exportar e fechar"}
             </Button>
-            {!prontoParaFechar && (
+            {!prontoParaFechar && !fechado && (
               <p className="text-xs text-warning">
                 {!pipeOk ? "Faça upload do CSV Pipe. " : ""}
                 {!snapshotOk ? "Gere o snapshot Voomp." : ""}
@@ -280,10 +334,10 @@ export default function MesPage() {
           </Card>
 
           <Card>
-            <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Voomp Cobrado</CardTitle></CardHeader>
+            <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Voomp Gerencial</CardTitle></CardHeader>
             <CardContent>
-              <p className="text-xl font-semibold tabular-nums">{fmt(totalVoompBruto)}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{voompCount} contratos · bruto s/ taxas</p>
+              <p className="text-xl font-semibold tabular-nums">{fmt(totalVoompGerencial)}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{voompCount} contratos · base da conciliação</p>
             </CardContent>
           </Card>
 
@@ -296,14 +350,6 @@ export default function MesPage() {
               <p className="text-xs text-muted-foreground mt-0.5">
                 {rows.filter((r) => r.voomp_reembolsado).length} reembolsado{rows.filter((r) => r.voomp_reembolsado).length !== 1 ? "s" : ""}
               </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Voomp Recebido</CardTitle></CardHeader>
-            <CardContent>
-              <p className="text-xl font-semibold tabular-nums">{fmt(totalVoompLiq)}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">líquido após taxas e reembolsos</p>
             </CardContent>
           </Card>
 
@@ -351,7 +397,7 @@ export default function MesPage() {
                     <th className="py-2 pr-4">Pipe</th>
                     <th className="py-2 pr-4">Voomp</th>
                     <th className="py-2 pr-4 text-right">Pipe R$</th>
-                    <th className="py-2 pr-4 text-right">Voomp Cobrado</th>
+                    <th className="py-2 pr-4 text-right">Voomp Gerencial</th>
                     <th className="py-2 pr-4 text-right">Diferença</th>
                     <th className="py-2 pr-4">Critério</th>
                     <th className="py-2 pr-4">Divergência</th>
@@ -375,6 +421,14 @@ export default function MesPage() {
                             {r.voomp_contrato_id ? ` · contrato ${r.voomp_contrato_id}` : ""}
                           </div>
                         )}
+                        {(r.qtd_cobrancas ?? 1) > 1 && (
+                          <Badge
+                            variant="muted"
+                            title={`Pagamento dividido — vendas: ${(r.vendas_agrupadas ?? []).join(", ")}`}
+                          >
+                            {r.qtd_cobrancas} cobranças agrupadas
+                          </Badge>
+                        )}
                       </td>
                       <td className="py-2 pr-4 text-right tabular-nums">{r.pipe_valor != null ? `R$ ${Number(r.pipe_valor).toFixed(2)}` : "—"}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{r.voomp_valor_cobrado != null ? `R$ ${Number(r.voomp_valor_cobrado).toFixed(2)}` : "—"}</td>
@@ -382,7 +436,12 @@ export default function MesPage() {
                       <td className="py-2 pr-4">{r.criterio ?? "—"}{r.confianca ? ` (${r.confianca}%)` : ""}</td>
                       <td className="py-2 pr-4">
                         {r.divergencia_classe && (
-                          <Badge variant={r.divergencia_classe === "IDENTICO" ? "success" : r.divergencia_classe === "CENTAVOS" ? "muted" : r.divergencia_classe === "CUPOM_PROVAVEL" ? "warning" : "destructive"}>
+                          <Badge variant={
+                            r.divergencia_classe === "IDENTICO" ? "success"
+                            : r.divergencia_classe === "CENTAVOS" || r.divergencia_classe === "PEQUENA" ? "muted"
+                            : r.divergencia_classe === "CUPOM_PROVAVEL" ? "warning"
+                            : "destructive"
+                          }>
                             {r.divergencia_classe}
                           </Badge>
                         )}
@@ -396,11 +455,13 @@ export default function MesPage() {
         </CardContent>
       </Card>
 
-      <div className="flex justify-end">
-        <Link href={`/mes/${ano_mes}/conciliacao`}>
-          <Button variant="outline"><AlertCircle className="h-4 w-4 mr-2" />Conciliação manual de órfãos</Button>
-        </Link>
-      </div>
+      {!fechado && (
+        <div className="flex justify-end">
+          <Link href={`/mes/${ano_mes}/conciliacao`}>
+            <Button variant="outline"><AlertCircle className="h-4 w-4 mr-2" />Conciliação manual de órfãos</Button>
+          </Link>
+        </div>
+      )}
     </div>
   );
 }

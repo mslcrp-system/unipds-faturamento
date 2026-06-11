@@ -25,7 +25,20 @@ type OrfaoVoomp = {
   produto_nome:        string | null;
   voomp_venda_id:      string | null;
   voomp_contrato_id:   string | null;
+  qtd_cobrancas:       number | null;
 };
+
+// Régua de divergência — mesma do executar_cruzamento do banco
+function classificarDivergencia(pipeValor: number, voompValor: number): string {
+  const div = pipeValor - voompValor;
+  if (div === 0) return "IDENTICO";
+  const abs = Math.abs(div);
+  if (abs < 1) return "CENTAVOS";
+  const pct = pipeValor !== 0 ? abs / pipeValor : 1;
+  if (pct < 0.05) return "PEQUENA";
+  if (pct <= 0.20) return "CUPOM_PROVAVEL";
+  return "MATERIAL";
+}
 
 export default function ConciliacaoPage() {
   const { ano_mes } = useParams<{ ano_mes: string }>();
@@ -37,21 +50,32 @@ export default function ConciliacaoPage() {
   const [selVoomp, setSelVoomp] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
+  const [fechado, setFechado] = useState(false);
 
   async function load() {
     if (!tenantId) return;
     setLoading(true);
-    const { data } = await supabase
-      .schema("conciliacao")
-      .from("v_cruzamento")
-      .select("*")
-      .eq("tenant_id", tenantId)
-      .eq("ano_mes", ano_mes)
-      .in("status_match", ["ORFAO_PIPE", "ORFAO_VOOMP"]);
+    const [{ data }, { data: f }] = await Promise.all([
+      supabase
+        .schema("conciliacao")
+        .from("v_cruzamento")
+        .select("*")
+        .eq("tenant_id", tenantId)
+        .eq("ano_mes", ano_mes)
+        .in("status_match", ["ORFAO_PIPE", "ORFAO_VOOMP"]),
+      supabase
+        .schema("conciliacao")
+        .from("fechamentos_mensais")
+        .select("estado")
+        .eq("tenant_id", tenantId)
+        .eq("ano_mes", ano_mes)
+        .maybeSingle(),
+    ]);
 
     const all = (data ?? []) as any[];
     setPipe(all.filter((r) => r.status_match === "ORFAO_PIPE") as OrfaoPipe[]);
     setVoomp(all.filter((r) => r.status_match === "ORFAO_VOOMP") as OrfaoVoomp[]);
+    setFechado(f?.estado === "FECHADO");
     setLoading(false);
   }
 
@@ -65,12 +89,7 @@ export default function ConciliacaoPage() {
     const dealPipe = pipe.find((p) => p.pipe_deal_id === selPipe)!;
     const contratoVoomp = voomp.find((v) => v.snapshot_id === selVoomp)!;
     const div = dealPipe.pipe_valor - Number(contratoVoomp.voomp_valor_cobrado);
-    const divPct = dealPipe.pipe_valor !== 0 ? Math.abs(div) / dealPipe.pipe_valor : 1;
-    const classe =
-      div === 0 ? "IDENTICO"
-      : Math.abs(div) < 1 ? "CENTAVOS"
-      : divPct >= 0.05 && divPct <= 0.20 ? "CUPOM_PROVAVEL"
-      : "MATERIAL";
+    const classe = classificarDivergencia(dealPipe.pipe_valor, Number(contratoVoomp.voomp_valor_cobrado));
 
     const { data: { user } } = await supabase.auth.getUser();
     const { error } = await supabase.schema("conciliacao").from("conciliacao_links").insert({
@@ -86,8 +105,11 @@ export default function ConciliacaoPage() {
     });
 
     setLinking(false);
-    if (error) alert(error.message);
-    else { setSelPipe(null); setSelVoomp(null); load(); }
+    if (error) {
+      alert(error.message.includes("FECHADO")
+        ? "Este mês está FECHADO — vínculos bloqueados. A reabertura é feita pelo gestor do banco."
+        : error.message);
+    } else { setSelPipe(null); setSelVoomp(null); load(); }
   }
 
   return (
@@ -98,10 +120,16 @@ export default function ConciliacaoPage() {
 
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Conciliação manual — {ano_mes}</h1>
-        <Button onClick={vincular} disabled={!selPipe || !selVoomp || linking}>
+        <Button onClick={vincular} disabled={!selPipe || !selVoomp || linking || fechado}>
           <Link2 className="h-4 w-4 mr-2" />{linking ? "Vinculando..." : "Vincular selecionados"}
         </Button>
       </div>
+
+      {fechado && (
+        <p className="text-sm text-muted-foreground">
+          Mês FECHADO — somente leitura. Vínculos manuais estão bloqueados.
+        </p>
+      )}
 
       <p className="text-sm text-muted-foreground">
         Selecione um órfão de cada lado e clique em Vincular. O vínculo é registrado como MANUAL com confiança 100%.
@@ -166,6 +194,9 @@ export default function ConciliacaoPage() {
                         <div className="text-xs text-muted-foreground">pago {v.voomp_data_pagamento?.slice(0, 10)}</div>
                         {v.voomp_venda_id && (
                           <div className="text-xs text-muted-foreground font-mono">venda {v.voomp_venda_id}</div>
+                        )}
+                        {(v.qtd_cobrancas ?? 1) > 1 && (
+                          <div className="text-xs text-muted-foreground">{v.qtd_cobrancas} cobranças agrupadas</div>
                         )}
                       </div>
                     </div>

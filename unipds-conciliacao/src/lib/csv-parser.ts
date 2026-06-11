@@ -66,11 +66,13 @@ export function parsePipeCsv(content: string): {
   rows: PipeDealRow[];
   errors: string[];
   unknownFunils: Set<string>;
+  totalLinhas: number;
 } {
   const result = Papa.parse<Record<string, string>>(content, { header: true, skipEmptyLines: true });
   const rows: PipeDealRow[] = [];
   const errors: string[] = [];
   const unknownFunils = new Set<string>();
+  const totalLinhas = result.data.length;
 
   for (const r of result.data) {
     const funil = (r["Negócio - Funil"] || "").trim();
@@ -114,5 +116,5 @@ export function parsePipeCsv(content: string): {
       ano_mes,
     });
   }
-  return { rows, errors, unknownFunils };
+  return { rows, errors, unknownFunils, totalLinhas };
 }

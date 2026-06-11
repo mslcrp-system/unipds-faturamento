@@ -115,7 +115,15 @@ A régua fica monotônica: 0 → IDENTICO · <R$1 → CENTAVOS · <5% → PEQUEN
 
 *(Nota de retratação: a versão anterior deste achado apontava "97,5% registram bruto / ~R$980 mil de excesso" — era artefato do bug B2 do snapshot v2, que gravava o líquido na coluna `valor_cobrado` para Único. A comparação contra a fonte corrige o quadro.)*
 
-**Decisão de design (recomendada):** NÃO trocar a base da divergência principal. A divergência atual (Pipe × bruto) é o que valida a identidade do match (95% idêntico) e sustenta a heurística de cupom. A auditoria de comissão entra como **dimensão paralela**:
+**DECISÃO DE NEGÓCIO CONFIRMADA (usuário, 2026-06-11):** o comercial passa a registrar **tudo pelo líquido** — Assinatura = `valor_recebido × recorrencia_total`, Único = `valor_recebido`. O comercial não diferencia venda parcelada de à vista; registra o mesmo valor (o que a empresa recebe).
+
+**Implicação para o snapshot/matching:** a base de conciliação (`valor_cobrado` do snapshot, hoje alinhada à prática antiga: líquido no Único e bruto cheio na Assinatura) deve convergir para **líquido cheio em ambos os tipos** — que é exatamente a regra gerencial original do projeto. Resultados exigidos:
+
+1. **Base única:** snapshot `valor_cobrado` (PAGO) = líquido cheio (`recebido` para Único; `recebido × recorrencia_total` para Assinatura).
+2. **Transição identificável:** deals de Assinatura registrados pela prática antiga (bruto cheio, ~12% acima) não devem poluir MATERIAL/CUPOM — flag `registro_bruto` os marca como lista de ajuste para o comercial.
+3. **Corte sugerido:** maio fecha com a base atual (matching já validado, 720 idênticos); base nova entra a partir de junho, com o comercial orientado a registrar o líquido desde já. Alternativa (a critério do mentor/usuário): virar a base já em maio e aceitar ~277 assinaturas flagadas como `registro_bruto` no fechamento.
+
+**Spec técnica original (dimensão paralela de auditoria — mantida como referência):**
 
 ```sql
 -- D1. Colunas novas em conciliacao_links
