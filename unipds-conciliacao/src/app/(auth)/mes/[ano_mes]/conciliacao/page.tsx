@@ -6,7 +6,8 @@ import { createClient } from "@/lib/supabase/client";
 import { useActiveTenant } from "@/lib/use-active-tenant";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Link2 } from "lucide-react";
+import { ArrowLeft, Link2, Search } from "lucide-react";
+import { classificarDivergencia, mesLabel } from "@/lib/conciliacao-ui";
 
 type OrfaoPipe = {
   pipe_deal_id:  number;
@@ -28,18 +29,6 @@ type OrfaoVoomp = {
   qtd_cobrancas:       number | null;
 };
 
-// Régua de divergência — mesma do executar_cruzamento do banco
-function classificarDivergencia(pipeValor: number, voompValor: number): string {
-  const div = pipeValor - voompValor;
-  if (div === 0) return "IDENTICO";
-  const abs = Math.abs(div);
-  if (abs < 1) return "CENTAVOS";
-  const pct = pipeValor !== 0 ? abs / pipeValor : 1;
-  if (pct < 0.05) return "PEQUENA";
-  if (pct <= 0.20) return "CUPOM_PROVAVEL";
-  return "MATERIAL";
-}
-
 export default function ConciliacaoPage() {
   const { ano_mes } = useParams<{ ano_mes: string }>();
   const tenantId = useActiveTenant();
@@ -51,6 +40,22 @@ export default function ConciliacaoPage() {
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
   const [fechado, setFechado] = useState(false);
+  const [busca, setBusca] = useState("");
+
+  const q = busca.trim().toLowerCase();
+  const pipeFiltrado = q
+    ? pipe.filter((p) =>
+        (p.pessoa_nome ?? "").toLowerCase().includes(q) ||
+        (p.pipe_cpf ?? "").includes(q) ||
+        String(p.pipe_deal_id).includes(q))
+    : pipe;
+  const voompFiltrado = q
+    ? voomp.filter((v) =>
+        (v.voomp_aluno_nome ?? "").toLowerCase().includes(q) ||
+        (v.voomp_cpf ?? "").includes(q) ||
+        (v.voomp_venda_id ?? "").includes(q) ||
+        (v.produto_nome ?? "").toLowerCase().includes(q))
+    : voomp;
 
   async function load() {
     if (!tenantId) return;
@@ -115,11 +120,11 @@ export default function ConciliacaoPage() {
   return (
     <div className="space-y-6">
       <Link href={`/mes/${ano_mes}`} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="h-4 w-4 mr-1" /> Voltar para {ano_mes}
+        <ArrowLeft className="h-4 w-4 mr-1" /> Voltar para {mesLabel(ano_mes)}
       </Link>
 
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Conciliação manual — {ano_mes}</h1>
+        <h1 className="text-2xl font-semibold">Vincular manualmente — {mesLabel(ano_mes)}</h1>
         <Button onClick={vincular} disabled={!selPipe || !selVoomp || linking || fechado}>
           <Link2 className="h-4 w-4 mr-2" />{linking ? "Vinculando..." : "Vincular selecionados"}
         </Button>
@@ -132,19 +137,30 @@ export default function ConciliacaoPage() {
       )}
 
       <p className="text-sm text-muted-foreground">
-        Selecione um órfão de cada lado e clique em Vincular. O vínculo é registrado como MANUAL com confiança 100%.
+        Selecione uma venda de cada lado e clique em Vincular. O par é registrado como vínculo manual, com rastro de quem vinculou.
       </p>
+
+      <div className="relative max-w-sm">
+        <Search className="h-4 w-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <input
+          type="text"
+          placeholder="Buscar nome, CPF ou venda nas duas listas..."
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          className="h-9 pl-8 pr-3 rounded-md border border-border text-sm w-full"
+        />
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Órfãos Pipe ({pipe.length})</CardTitle>
-            <p className="text-xs text-muted-foreground">Deals sem contrato Voomp correspondente</p>
+            <CardTitle className="text-base">Só no Pipe ({pipeFiltrado.length})</CardTitle>
+            <p className="text-xs text-muted-foreground">Deals comerciais sem venda Voomp correspondente</p>
           </CardHeader>
           <CardContent>
             {loading ? <p>Carregando...</p> : (
               <div className="space-y-1.5 max-h-[600px] overflow-y-auto">
-                {pipe.map((p) => (
+                {pipeFiltrado.map((p) => (
                   <button
                     key={p.pipe_deal_id}
                     onClick={() => setSelPipe(p.pipe_deal_id)}
@@ -162,7 +178,7 @@ export default function ConciliacaoPage() {
                     </div>
                   </button>
                 ))}
-                {pipe.length === 0 && <p className="text-muted-foreground text-center py-8">Nenhum órfão Pipe.</p>}
+                {pipeFiltrado.length === 0 && <p className="text-muted-foreground text-center py-8">Nenhuma venda só no Pipe{busca ? ` para "${busca}"` : ""}.</p>}
               </div>
             )}
           </CardContent>
@@ -170,13 +186,13 @@ export default function ConciliacaoPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Órfãos Voomp ({voomp.length})</CardTitle>
-            <p className="text-xs text-muted-foreground">Contratos confirmados sem deal Pipe correspondente</p>
+            <CardTitle className="text-base">Só na Voomp ({voompFiltrado.length})</CardTitle>
+            <p className="text-xs text-muted-foreground">Vendas fiscais sem deal Pipe correspondente</p>
           </CardHeader>
           <CardContent>
             {loading ? <p>Carregando...</p> : (
               <div className="space-y-1.5 max-h-[600px] overflow-y-auto">
-                {voomp.map((v) => (
+                {voompFiltrado.map((v) => (
                   <button
                     key={v.snapshot_id}
                     onClick={() => setSelVoomp(v.snapshot_id)}
@@ -202,7 +218,7 @@ export default function ConciliacaoPage() {
                     </div>
                   </button>
                 ))}
-                {voomp.length === 0 && <p className="text-muted-foreground text-center py-8">Nenhum órfão Voomp.</p>}
+                {voompFiltrado.length === 0 && <p className="text-muted-foreground text-center py-8">Nenhuma venda só na Voomp{busca ? ` para "${busca}"` : ""}.</p>}
               </div>
             )}
           </CardContent>
