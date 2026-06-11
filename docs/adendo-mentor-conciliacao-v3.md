@@ -108,7 +108,12 @@ A régua fica monotônica: 0 → IDENTICO · <R$1 → CENTAVOS · <5% → PEQUEN
 
 **Regra confirmada pelo usuário (2026-06-11):** o valor correto do deal no Pipe é o **líquido** (valor recebido pela empresa, pós-taxas Voomp), porque a comissão do comercial é paga sobre o líquido. As taxas não são negociáveis.
 
-**Evidência (maio/IA, 751 casados):** em **732 deals (97,5%)** o valor registrado no Pipe bate com o **bruto cobrado ao aluno** (diferença < R$1), não com o líquido. Isso é falha sistemática de registro do comercial — e infla a base de comissão no valor das taxas Voomp, estimado em **~R$980 mil/mês gerencial** pela fonte (`unipds.charges`: ~R$793 mil de taxa em Único + ~R$187 mil projetado em Assinatura).
+**Evidência CORRIGIDA (2026-06-11, pós-v3, comparação direta com `unipds.charges`):**
+
+- **Único: o comercial JÁ registra o líquido.** Dos 486 casados com 1 cobrança, **470 (96,7%) batem ao centavo com `valor_recebido`** e **0 batem com o bruto**. A retenção alta nos parcelados (até 27,6% em cartão 12×) é juros de financiamento pagos pelo aluno (embutidos no cobrado) + taxa Voomp ~3,5% — e o comercial registra o valor já líquido disso. 16 deals não batem com nenhum dos dois (fila de revisão).
+- **Assinatura: registra o bruto cheio do contrato** (deals batem com `cobrado × recorrência`, ex. venda 1620157: deal R$5.208,03 vs R$5.200,68). Diferença para o líquido cheio ≈ 12%/contrato → **~R$190 mil/mês gerencial** nas ~277 assinaturas. Este é o caso real de registro acima do líquido.
+
+*(Nota de retratação: a versão anterior deste achado apontava "97,5% registram bruto / ~R$980 mil de excesso" — era artefato do bug B2 do snapshot v2, que gravava o líquido na coluna `valor_cobrado` para Único. A comparação contra a fonte corrige o quadro.)*
 
 **Decisão de design (recomendada):** NÃO trocar a base da divergência principal. A divergência atual (Pipe × bruto) é o que valida a identidade do match (95% idêntico) e sustenta a heurística de cupom. A auditoria de comissão entra como **dimensão paralela**:
 
@@ -289,7 +294,7 @@ WHERE tenant_id = 'e717e24d-fb30-4ed0-83d3-bb8ea0b66783' AND ano_mes = '2026-05'
 | B2 | Único: líquido real da fonte (hoje recebido = cobrado no snapshot) | Restaura ~25% de taxa que sumiu nas vendas à vista |
 | B3 | Assinatura: líquido × recorrência (hoje só 1 parcela) | Líquido gerencial simétrico ao bruto |
 | C | Classe PEQUENA (≥R$1 e <5%) na régua + CHECK | MATERIAL volta a significar divergência real |
-| D | `divergencia_liquido` + flag `registro_bruto` no cruzamento (depende de B) | Auditoria da base de comissão: ~R$980 mil/mês de taxa registrada como venda no Pipe |
+| D | `divergencia_liquido` + flag `registro_bruto` no cruzamento (depende de B) | Auditoria da base de comissão — escopo recalibrado: Assinatura (~R$190 mil/mês) + 16 casos Único; vendas Único já registram o líquido |
 | — | Regenerar snapshot maio/IA com a v3 | Fechamento de maio sai limpo |
 
 **Nota:** a função v3 deste adendo já corrige B1, B2 e B3 simultaneamente (usa os valores da fonte sem zerar e aplica × recorrência no líquido).
