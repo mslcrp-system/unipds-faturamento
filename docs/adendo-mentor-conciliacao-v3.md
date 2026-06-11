@@ -56,6 +56,21 @@ Ou seja: **reembolsado entra com valor gerencial cheio + flag `reembolsado = tru
 
 **Nota:** os 50→40 são efeito da deduplicação com prioridade PAGO (contrato com parcela 1 paga E reembolsada conta como pago) — comportamento correto, sem ação.
 
+### B2 — Único: `valor_recebido` = `valor_cobrado` no snapshot (taxa sumiu)
+
+| Origem (maio/IA, Único não-reembolsado) | Cobrado médio | Recebido médio |
+|---|---|---|
+| `unipds.charges` (fonte) | R$ 5.847,24 | **R$ 4.362,60** (~25% de taxa) |
+| `voomp_snapshot` | R$ 4.627,34 | **= cobrado** (taxa zerada) |
+
+Os 518 contratos Único no snapshot têm `valor_cobrado − valor_recebido = 0` em todos, contradizendo a fonte. O líquido das vendas à vista está sendo perdido na geração.
+
+### B3 — Assinatura: `valor_recebido` sem × recorrência
+
+Snapshot de maio: 277 assinaturas com líquido médio de **R$ 469/contrato** = exatamente 1 parcela líquida. A regra confirmada pelo usuário é `valor_recebido × recorrencia_total` (gerencial cheio, simétrico ao bruto). A v3 proposta neste adendo já implementa isso corretamente (CASE do líquido com `× recorrencia_total`) — registrado aqui como evidência de que a versão em produção diverge.
+
+**Consequência de B1+B2+B3:** o líquido do snapshot hoje não serve de base para nenhuma análise — e ele é o insumo do Achado D abaixo.
+
 ---
 
 ## Achado C — Faixa cega na régua de divergência
@@ -86,6 +101,41 @@ END
 ```
 
 A régua fica monotônica: 0 → IDENTICO · <R$1 → CENTAVOS · <5% → PEQUENA · 5–20% → CUPOM · >20% → MATERIAL. O front replica a mesma régua nos vínculos manuais (lado meu).
+
+---
+
+## Achado D — Base de comissão: o Pipe deve registrar o LÍQUIDO (regra de negócio nova)
+
+**Regra confirmada pelo usuário (2026-06-11):** o valor correto do deal no Pipe é o **líquido** (valor recebido pela empresa, pós-taxas Voomp), porque a comissão do comercial é paga sobre o líquido. As taxas não são negociáveis.
+
+**Evidência (maio/IA, 751 casados):** em **732 deals (97,5%)** o valor registrado no Pipe bate com o **bruto cobrado ao aluno** (diferença < R$1), não com o líquido. Isso é falha sistemática de registro do comercial — e infla a base de comissão no valor das taxas Voomp, estimado em **~R$980 mil/mês gerencial** pela fonte (`unipds.charges`: ~R$793 mil de taxa em Único + ~R$187 mil projetado em Assinatura).
+
+**Decisão de design (recomendada):** NÃO trocar a base da divergência principal. A divergência atual (Pipe × bruto) é o que valida a identidade do match (95% idêntico) e sustenta a heurística de cupom. A auditoria de comissão entra como **dimensão paralela**:
+
+```sql
+-- D1. Colunas novas em conciliacao_links
+ALTER TABLE conciliacao.conciliacao_links
+  ADD COLUMN divergencia_liquido numeric(15,2),
+  ADD COLUMN registro_bruto      boolean NOT NULL DEFAULT false;
+```
+
+```sql
+-- D2. Em executar_cruzamento, nos 3 passes, calcular junto com a divergência atual:
+--   divergencia_liquido = round((pd.valor - vs.valor_recebido)::numeric, 2)
+--   registro_bruto      = (abs(pd.valor - vs.valor_cobrado) < 1
+--                          AND vs.valor_cobrado - vs.valor_recebido >= 1)
+-- (depende de B2/B3 corrigidos — sem líquido correto no snapshot o flag não funciona)
+```
+
+```sql
+-- D3. v_cruzamento: expor divergencia_liquido e registro_bruto (AO FINAL das colunas)
+```
+
+**Semântica do flag `registro_bruto`:** o deal casou pelo valor bruto numa venda que tem taxa — ou seja, o comercial registrou o valor cobrado ao aluno em vez do líquido. É a lista exata de ajuste a devolver ao comercial.
+
+**Lado do front (meu, após aplicação):** card "Base de comissão" (soma do excesso `pipe − líquido` nos casados), filtro REGISTRO BRUTO na tabela, e seção própria no relatório Excel de fechamento com deal, proprietário, valor registrado, líquido correto e diferença — pronta para o ajuste no Pipe.
+
+**Dependência:** D depende de B2/B3 (líquido correto no snapshot). Ordem: B → D.
 
 ---
 
@@ -235,6 +285,11 @@ WHERE tenant_id = 'e717e24d-fb30-4ed0-83d3-bb8ea0b66783' AND ano_mes = '2026-05'
 | # | O quê | Efeito |
 |---|-------|--------|
 | A | Agrupar cobranças Único por aluno+produto no snapshot (+2 colunas de rastro) | Elimina a maior fonte de falso MATERIAL/órfão (9–13 casos/mês) |
-| B | Não zerar valores de reembolsados (regra gerencial confirmada pelo usuário) | R$184 mil/mês voltam a aparecer no card Reembolsos |
+| B1 | Não zerar valores de reembolsados (regra gerencial confirmada pelo usuário) | R$184 mil/mês voltam a aparecer no card Reembolsos |
+| B2 | Único: líquido real da fonte (hoje recebido = cobrado no snapshot) | Restaura ~25% de taxa que sumiu nas vendas à vista |
+| B3 | Assinatura: líquido × recorrência (hoje só 1 parcela) | Líquido gerencial simétrico ao bruto |
 | C | Classe PEQUENA (≥R$1 e <5%) na régua + CHECK | MATERIAL volta a significar divergência real |
+| D | `divergencia_liquido` + flag `registro_bruto` no cruzamento (depende de B) | Auditoria da base de comissão: ~R$980 mil/mês de taxa registrada como venda no Pipe |
 | — | Regenerar snapshot maio/IA com a v3 | Fechamento de maio sai limpo |
+
+**Nota:** a função v3 deste adendo já corrige B1, B2 e B3 simultaneamente (usa os valores da fonte sem zerar e aplica × recorrência no líquido).
