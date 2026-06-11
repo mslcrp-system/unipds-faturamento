@@ -31,6 +31,8 @@ type OrfaoVoomp = {
   voomp_venda_id:      string | null;
   voomp_contrato_id:   string | null;
   qtd_cobrancas:       number | null;
+  voomp_reembolsado:   boolean | null;
+  tipo_cobranca:       string | null;
 };
 
 export default function ConciliacaoPage() {
@@ -297,11 +299,18 @@ export default function ConciliacaoPage() {
                         <div className="text-xs text-muted-foreground truncate">
                           {v.voomp_cpf ?? "sem CPF"} · {v.produto_nome ?? "—"}
                         </div>
-                        {pipeSel && v._score >= 0.5 && (
-                          <Badge variant={v._score >= 0.75 ? "success" : "warning"}>
-                            {Math.round(v._score * 100)}% provável
-                          </Badge>
-                        )}
+                        <div className="flex flex-wrap gap-1">
+                          {v.voomp_reembolsado && (
+                            <Badge variant="destructive" title="Venda reembolsada — aluno saiu; normalmente não se vincula a deal">
+                              Reembolsado ↩
+                            </Badge>
+                          )}
+                          {pipeSel && v._score >= 0.5 && (
+                            <Badge variant={v._score >= 0.75 ? "success" : "warning"}>
+                              {Math.round(v._score * 100)}% provável
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                       <div className="text-right shrink-0">
                         <div className="font-mono tabular-nums">{fmtBRL(Number(v.voomp_valor_cobrado))}</div>
