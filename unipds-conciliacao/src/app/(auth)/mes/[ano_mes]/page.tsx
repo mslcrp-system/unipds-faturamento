@@ -301,10 +301,10 @@ export default function MesPage() {
     setSalvandoNota(true);
     const existente = notaDaLinha(justificando);
     const { data: { user } } = await supabase.auth.getUser();
+    // updated_at é mantido por trigger no banco — não setar aqui
     const payload = {
       motivo: motivoSel,
       nota: notaTexto.trim() || null,
-      updated_at: new Date().toISOString(),
     };
     const { error } = existente
       ? await supabase.schema("conciliacao").from("notas_pendencia")
