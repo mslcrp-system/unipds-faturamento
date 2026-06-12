@@ -117,7 +117,8 @@ export default function ConciliacaoPage() {
 
     const all = (data ?? []) as any[];
     setPipe(all.filter((r) => r.status_match === "ORFAO_PIPE") as OrfaoPipe[]);
-    setVoomp(all.filter((r) => r.status_match === "ORFAO_VOOMP") as OrfaoVoomp[]);
+    // Reembolsados fora da lista: venda estornada não tem o que vincular
+    setVoomp(all.filter((r) => r.status_match === "ORFAO_VOOMP" && !r.voomp_reembolsado) as OrfaoVoomp[]);
     setFechado(f?.estado === "FECHADO");
     setLoading(false);
   }

@@ -71,7 +71,7 @@ type Suspeito = {
   criterio_suspeita: string;
 };
 
-type Filtro = "TODOS" | "CONCILIADO" | "SO_PIPE" | "SO_VOOMP" | "MATERIAL" | "REEMBOLSO" | "REGISTRO_BRUTO";
+type Filtro = "TODOS" | "CONCILIADO" | "SO_PIPE" | "SO_VOOMP" | "MATERIAL" | "REGISTRO_BRUTO";
 
 function friendlyError(message: string): string {
   if (message.includes("FECHADO")) {
@@ -118,7 +118,10 @@ export default function MesPage() {
     ]);
 
     setFechamento(f);
-    setRows((cruzRows ?? []) as CruzamentoRow[]);
+    // Reembolsos ficam fora da tela de conciliação (decisão 2026-06-12):
+    // o valor exibido (parcela estornada) confunde a análise; o acompanhamento
+    // é feito na consulta própria de reembolsos e no relatório de fechamento.
+    setRows(((cruzRows ?? []) as CruzamentoRow[]).filter((r) => !r.voomp_reembolsado));
     setUltimoImport((imp ?? null) as PipeImport | null);
     setSuspeitos((susp ?? []) as Suspeito[]);
     setLoading(false);
@@ -282,23 +285,21 @@ export default function MesPage() {
   const pipeCount   = rows.filter((r) => r.pipe_valor != null).length;
   const voompCount  = rows.filter((r) => r.voomp_valor_cobrado != null).length;
   const casados     = rows.filter((r) => r.status_match === "CASADO");
-  const orfaosPipeCount       = rows.filter((r) => r.status_match === "ORFAO_PIPE").length;
-  const orfaosVoompAtivosCount = rows.filter((r) => r.status_match === "ORFAO_VOOMP" && !r.voomp_reembolsado).length;
-  const reembolsosCount = rows.filter((r) => r.voomp_reembolsado).length;
+  const orfaosPipeCount        = rows.filter((r) => r.status_match === "ORFAO_PIPE").length;
+  const orfaosVoompAtivosCount = rows.filter((r) => r.status_match === "ORFAO_VOOMP").length;
 
   const totalPipe           = rows.reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
-  const totalVoompGerencial = rows.filter((r) => !r.voomp_reembolsado).reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
-  const totalReembolsos     = rows.filter((r) => r.voomp_reembolsado).reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
+  const totalVoompGerencial = rows.reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
   const casadosPipe         = casados.reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
   const casadosVoomp        = casados.reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
   const orfaosPipeValor     = rows.filter((r) => r.status_match === "ORFAO_PIPE").reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
-  const orfaosVoompValor    = rows.filter((r) => r.status_match === "ORFAO_VOOMP" && !r.voomp_reembolsado).reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
+  const orfaosVoompValor    = rows.filter((r) => r.status_match === "ORFAO_VOOMP").reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
   const difPipeVoomp        = totalPipe - totalVoompGerencial;
   // Sentinela de comissão: excesso = soma das divergências líquidas positivas nos casados
   const excessoComissao     = casados.reduce((s, r) => s + Math.max(0, r.divergencia_liquido ?? 0), 0);
   const registroBrutoCount  = rows.filter((r) => r.registro_bruto).length;
-  // Taxa da fotografia = bruto cheio − líquido cheio (só não-reembolsados)
-  const totalTaxas          = rows.filter((r) => !r.voomp_reembolsado)
+  // Taxa da fotografia = bruto cheio − líquido cheio
+  const totalTaxas          = rows
     .reduce((s, r) => s + Math.max(0, (r.voomp_valor_bruto ?? r.voomp_valor_cobrado ?? 0) - (r.voomp_valor_cobrado ?? 0)), 0);
 
   const linksPorCriterio = useMemo(() => {
@@ -321,7 +322,6 @@ export default function MesPage() {
     SO_PIPE: orfaosPipeCount,
     SO_VOOMP: orfaosVoompAtivosCount,
     MATERIAL: rows.filter((r) => r.divergencia_classe === "MATERIAL").length,
-    REEMBOLSO: reembolsosCount,
     REGISTRO_BRUTO: registroBrutoCount,
   };
 
@@ -329,9 +329,8 @@ export default function MesPage() {
     let out = rows;
     if (filtro === "CONCILIADO") out = out.filter((r) => r.status_match === "CASADO");
     else if (filtro === "SO_PIPE") out = out.filter((r) => r.status_match === "ORFAO_PIPE");
-    else if (filtro === "SO_VOOMP") out = out.filter((r) => r.status_match === "ORFAO_VOOMP" && !r.voomp_reembolsado);
+    else if (filtro === "SO_VOOMP") out = out.filter((r) => r.status_match === "ORFAO_VOOMP");
     else if (filtro === "MATERIAL") out = out.filter((r) => r.divergencia_classe === "MATERIAL");
-    else if (filtro === "REEMBOLSO") out = out.filter((r) => r.voomp_reembolsado);
     else if (filtro === "REGISTRO_BRUTO") out = out.filter((r) => r.registro_bruto);
 
     const q = busca.trim().toLowerCase();
@@ -355,7 +354,6 @@ export default function MesPage() {
     SO_PIPE: "Só no Pipe",
     SO_VOOMP: "Só na Voomp",
     MATERIAL: "Materiais",
-    REEMBOLSO: "Reembolsos",
     REGISTRO_BRUTO: "Registro bruto",
   };
 
@@ -364,7 +362,6 @@ export default function MesPage() {
       const outro = tenantById(r.voomp_tenant_id)?.curto ?? "outro";
       return <Badge variant="destructive" title={`Deal fechado no funil errado — aluno pertence ao tenant ${outro}`}>Outro tenant ({outro})</Badge>;
     }
-    if (r.voomp_reembolsado) return <Badge variant="muted">Reembolsado</Badge>;
     if (r.status_match === "CASADO") return <Badge variant="success">Conciliado</Badge>;
     if (r.status_match === "ORFAO_PIPE") return <Badge variant="warning" title="Deal no Pipe sem venda Voomp correspondente">Só no Pipe</Badge>;
     return <Badge variant="warning" title="Venda na Voomp sem deal no Pipe">Só na Voomp</Badge>;
@@ -556,7 +553,7 @@ export default function MesPage() {
 
       {/* ── Resumo financeiro ─────────────────────────────────────── */}
       {!loading && rows.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <Card>
             <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Pipe (comercial)</CardTitle></CardHeader>
             <CardContent>
@@ -570,7 +567,7 @@ export default function MesPage() {
             <CardContent>
               <p className="text-lg font-semibold tabular-nums">{fmtBRL(totalVoompGerencial)}</p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                {voompCount - reembolsosCount} vendas · líquido{totalTaxas > 0 ? ` · taxas ${fmtBRL(totalTaxas)}` : ""}
+                {voompCount} vendas · líquido{totalTaxas > 0 ? ` · taxas ${fmtBRL(totalTaxas)}` : ""}
               </p>
             </CardContent>
           </Card>
@@ -582,16 +579,6 @@ export default function MesPage() {
               <p className="text-xs text-muted-foreground mt-0.5">
                 {totalPipe !== 0 ? `${((Math.abs(difPipeVoomp) / totalPipe) * 100).toFixed(1)}% do Pipe` : "—"}
               </p>
-            </CardContent>
-          </Card>
-
-          <Card className={totalReembolsos > 0 ? "border-destructive/40 bg-destructive/5" : ""}>
-            <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Reembolsos</CardTitle></CardHeader>
-            <CardContent>
-              <p className={`text-lg font-semibold tabular-nums ${totalReembolsos > 0 ? "text-destructive" : ""}`}>
-                {totalReembolsos > 0 ? `- ${fmtBRL(totalReembolsos)}` : fmtBRL(0)}
-              </p>
-              <p className="text-xs text-muted-foreground mt-0.5">{reembolsosCount} venda{reembolsosCount !== 1 ? "s" : ""}</p>
             </CardContent>
           </Card>
 
@@ -624,6 +611,13 @@ export default function MesPage() {
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {!loading && rows.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Vendas reembolsadas ficam fora desta tela — o acompanhamento de reembolsos é feito
+          na consulta própria e elas seguem registradas no relatório de fechamento.
+        </p>
       )}
 
       {/* ── Suspeitos de tenant errado ────────────────────────────── */}
@@ -724,7 +718,7 @@ export default function MesPage() {
                 </thead>
                 <tbody>
                   {filtered.map((r, idx) => (
-                    <tr key={idx} className={`border-b border-border/50 ${r.voomp_reembolsado ? "opacity-60" : ""}`}>
+                    <tr key={idx} className="border-b border-border/50">
                       <td className="py-2 pr-4">{statusBadge(r)}</td>
                       <td className="py-2 pr-4 max-w-[180px]">
                         <div className="truncate" title={r.pessoa_nome ?? ""}>{r.pessoa_nome ?? "—"}</div>
