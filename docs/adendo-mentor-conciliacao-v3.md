@@ -195,6 +195,59 @@ ALTER TABLE conciliacao.conciliacao_links
 
 ---
 
+## Item F — Notas de justificativa nas pendências (solicitação 2026-06-12)
+
+**Necessidade (usuário):** registrar o motivo de cada pendência que ficará em aberto no fechamento. Casos reais de maio: deal Java sem par porque *"o pagamento na Voomp foi negado no cartão do aluno"*; deal IA (Diovan Oliveira Leal) cujo pagamento *"foi aprovado só em 06/2026"*. Hoje não há onde anotar — a pendência fecha sem explicação.
+
+**Solução:** tabela de notas, 1 por pendência (lado Pipe OU lado Voomp), travada junto com o mês:
+
+```sql
+CREATE TABLE conciliacao.notas_pendencia (
+  nota_id      uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id    uuid        NOT NULL REFERENCES unipds.tenants(tenant_id),
+  ano_mes      text        NOT NULL CHECK (ano_mes ~ '^\d{4}-(0[1-9]|1[0-2])$'),
+  pipe_deal_id bigint,                -- pendência do lado Pipe
+  snapshot_id  uuid        REFERENCES conciliacao.voomp_snapshot(snapshot_id) ON DELETE CASCADE,
+  motivo       text        NOT NULL CHECK (motivo IN
+                 ('PAGAMENTO_NEGADO','PAGO_OUTRO_MES','CANCELADO','OUTRO')),
+  nota         text,                  -- texto livre complementar
+  created_by   uuid,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  CHECK (pipe_deal_id IS NOT NULL OR snapshot_id IS NOT NULL)
+);
+
+-- 1 nota por pendência (editável enquanto o mês está aberto)
+CREATE UNIQUE INDEX notas_pendencia_deal_uq
+  ON conciliacao.notas_pendencia (tenant_id, ano_mes, pipe_deal_id)
+  WHERE pipe_deal_id IS NOT NULL;
+CREATE UNIQUE INDEX notas_pendencia_snap_uq
+  ON conciliacao.notas_pendencia (snapshot_id)
+  WHERE snapshot_id IS NOT NULL;
+CREATE INDEX ON conciliacao.notas_pendencia (tenant_id, ano_mes);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON conciliacao.notas_pendencia TO authenticated;
+GRANT ALL ON conciliacao.notas_pendencia TO service_role;
+ALTER TABLE conciliacao.notas_pendencia ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "authenticated full access" ON conciliacao.notas_pendencia
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+-- Mesma trava de mês fechado das demais tabelas
+CREATE TRIGGER bloquear_mes_fechado
+  BEFORE INSERT OR UPDATE OR DELETE ON conciliacao.notas_pendencia
+  FOR EACH ROW EXECUTE FUNCTION conciliacao.tg_bloquear_mes_fechado();
+
+NOTIFY pgrst, 'reload schema';
+```
+
+**Notas de design:**
+- FK com `ON DELETE CASCADE` no snapshot: se a fotografia for regenerada, as notas do lado Voomp caem junto (referem-se àquelas linhas). Notas do lado Pipe sobrevivem ao full-replace (deal_id é estável).
+- O front lê/escreve a tabela diretamente (sem mudança em `v_cruzamento`) e o relatório Excel ganha a coluna "Justificativa" nas pendências — ambos já implementados no app, aguardando só a criação da tabela.
+
+**Validação:** inserir nota num mês ABERTO funciona; no mesmo mês FECHADO, falha com a trava P0001.
+
+---
+
 ## Função consolidada v3 — `gerar_snapshot_voomp` (Achados A + B)
 
 ```sql

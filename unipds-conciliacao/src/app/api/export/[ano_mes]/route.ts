@@ -51,10 +51,13 @@ export async function POST(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return new NextResponse("Não autenticado", { status: 401 });
 
-  const [{ data: cruzRows }, { data: fechamento }, { data: tenantInfo }] = await Promise.all([
+  const [{ data: cruzRows }, { data: fechamento }, { data: tenantInfo }, notasRes] = await Promise.all([
     supabase.schema("conciliacao").from("v_cruzamento").select("*").eq("tenant_id", tenant_id).eq("ano_mes", ano_mes),
     supabase.schema("conciliacao").from("fechamentos_mensais").select("*").eq("tenant_id", tenant_id).eq("ano_mes", ano_mes).maybeSingle(),
     supabase.schema("unipds").from("tenants").select("nome,cnpj").eq("tenant_id", tenant_id).single(),
+    // Justificativas das pendências (tabela pode ainda não existir — erro ignorado)
+    supabase.schema("conciliacao").from("notas_pendencia")
+      .select("pipe_deal_id, snapshot_id, motivo, nota").eq("tenant_id", tenant_id).eq("ano_mes", ano_mes),
   ]);
 
   if (!fechamento) return new NextResponse("Fechamento não encontrado", { status: 404 });
@@ -68,6 +71,22 @@ export async function POST(
   const orfaosPipe      = rows.filter((r) => r.status_match === "ORFAO_PIPE");
   const orfaosVoomp     = rows.filter((r) => r.status_match === "ORFAO_VOOMP");
   const reembolsos      = rows.filter((r) => r.voomp_reembolsado);
+
+  // Justificativas: lookup por deal (lado Pipe) e por snapshot (lado Voomp)
+  const MOTIVO_LABEL: Record<string, string> = {
+    PAGAMENTO_NEGADO: "Pagamento negado",
+    PAGO_OUTRO_MES: "Pago em outro mês",
+    CANCELADO: "Cancelado / desistência",
+    OUTRO: "Outro motivo",
+  };
+  const notas = (notasRes.data ?? []) as any[];
+  function justificativa(r: any): string {
+    const n = r.status_match === "ORFAO_PIPE"
+      ? notas.find((x) => x.pipe_deal_id === r.pipe_deal_id)
+      : notas.find((x) => x.snapshot_id === r.snapshot_id);
+    if (!n) return "—";
+    return `${MOTIVO_LABEL[n.motivo] ?? n.motivo}${n.nota ? ` — ${n.nota}` : ""}`;
+  }
 
   const wb = new ExcelJS.Workbook();
   wb.creator = "Unipds Conciliação";
@@ -107,6 +126,7 @@ export async function POST(
       orfaosPipe.length   ? { type: "pattern", pattern: "solid", fgColor: COR.ORFAO } : undefined],
     ["Órfãos Voomp (sem deal Pipe)",    String(orfaosVoomp.length),
       orfaosVoomp.length  ? { type: "pattern", pattern: "solid", fgColor: COR.ORFAO } : undefined],
+    ["Pendências justificadas",         String(notas.length)],
     ["Reembolsos no mês",               String(reembolsos.length),
       reembolsos.length   ? { type: "pattern", pattern: "solid", fgColor: COR.REEMBOLSO } : undefined],
   ];
@@ -160,10 +180,13 @@ export async function POST(
 
   if (orfaosPipe.length > 0) {
     addSectionHeader(sPend, `ÓRFÃOS PIPE — deal sem contrato Voomp correspondente (${orfaosPipe.length})`, NCOLS);
-    const h = sPend.addRow(["Deal Pipe", "Nome Pipe", "CPF Pipe", "Valor Pipe", "Ganho em", "", "", "", ""]);
+    const h = sPend.addRow(["Deal Pipe", "Nome Pipe", "CPF Pipe", "Valor Pipe", "Ganho em", "Justificativa", "", "", ""]);
     addPendHeader(h);
     orfaosPipe.forEach((r: any) => {
-      const row = sPend.addRow([r.pipe_deal_id, r.pessoa_nome ?? "—", r.pipe_cpf ?? "—", r.pipe_valor, r.voomp_data_pagamento ?? "—", "", "", "", ""]);
+      const row = sPend.addRow([
+        r.pipe_deal_id, r.pessoa_nome ?? "—", r.pipe_cpf ?? "—", r.pipe_valor,
+        r.voomp_data_pagamento ?? "—", justificativa(r), "", "", "",
+      ]);
       applyFill(row, { type: "pattern", pattern: "solid", fgColor: COR.ORFAO });
     });
     sPend.addRow([]);
@@ -171,14 +194,14 @@ export async function POST(
 
   if (orfaosVoomp.length > 0) {
     addSectionHeader(sPend, `ÓRFÃOS VOOMP — contrato sem deal Pipe correspondente (${orfaosVoomp.length})`, NCOLS);
-    const h = sPend.addRow(["Snapshot ID", "Aluno", "CPF", "Produto", "Tipo", "Cobrado", "Recebido", "Data pag.", ""]);
+    const h = sPend.addRow(["Snapshot ID", "Aluno", "CPF", "Produto", "Tipo", "Cobrado", "Recebido", "Data pag.", "Justificativa"]);
     addPendHeader(h);
     orfaosVoomp.forEach((r: any) => {
       const row = sPend.addRow([
         r.snapshot_id, r.voomp_aluno_nome ?? "—", r.voomp_cpf ?? "—",
         r.produto_nome ?? "—", r.tipo_cobranca ?? "—",
         r.voomp_valor_cobrado, r.voomp_valor_recebido,
-        r.voomp_data_pagamento ?? "—", "",
+        r.voomp_data_pagamento ?? "—", justificativa(r),
       ]);
       applyFill(row, { type: "pattern", pattern: "solid", fgColor: COR.ORFAO });
     });

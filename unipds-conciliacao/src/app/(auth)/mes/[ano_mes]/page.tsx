@@ -71,6 +71,21 @@ type Suspeito = {
   criterio_suspeita: string;
 };
 
+type NotaPendencia = {
+  nota_id: string;
+  pipe_deal_id: number | null;
+  snapshot_id: string | null;
+  motivo: string;
+  nota: string | null;
+};
+
+const MOTIVO_LABEL: Record<string, string> = {
+  PAGAMENTO_NEGADO: "Pagamento negado",
+  PAGO_OUTRO_MES: "Pago em outro mês",
+  CANCELADO: "Cancelado / desistência",
+  OUTRO: "Outro motivo",
+};
+
 type Filtro = "TODOS" | "CONCILIADO" | "SO_PIPE" | "SO_VOOMP" | "MATERIAL" | "REGISTRO_BRUTO";
 
 function friendlyError(message: string): string {
@@ -99,12 +114,18 @@ export default function MesPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [filtro, setFiltro] = useState<Filtro>("TODOS");
   const [busca, setBusca] = useState("");
+  const [notas, setNotas] = useState<NotaPendencia[]>([]);
+  // pendência sendo justificada no modal (referência à linha + nota existente, se houver)
+  const [justificando, setJustificando] = useState<CruzamentoRow | null>(null);
+  const [motivoSel, setMotivoSel] = useState("PAGAMENTO_NEGADO");
+  const [notaTexto, setNotaTexto] = useState("");
+  const [salvandoNota, setSalvandoNota] = useState(false);
 
   async function load() {
     if (!tenantId) return;
     setLoading(true);
 
-    const [{ data: f }, { data: cruzRows }, { data: imp }, { data: susp }] = await Promise.all([
+    const [{ data: f }, { data: cruzRows }, { data: imp }, { data: susp }, notasRes] = await Promise.all([
       supabase.schema("conciliacao").from("fechamentos_mensais")
         .select("*").eq("tenant_id", tenantId).eq("ano_mes", ano_mes).maybeSingle(),
       supabase.schema("conciliacao").from("v_cruzamento")
@@ -115,6 +136,10 @@ export default function MesPage() {
         .order("imported_at", { ascending: false }).limit(1).maybeSingle(),
       supabase.schema("conciliacao").from("v_suspeitos_tenant_errado")
         .select("*").eq("tenant_pipe", tenantId).eq("ano_mes", ano_mes),
+      // Tabela pode ainda não existir (aguardando mentor) — erro é ignorado
+      supabase.schema("conciliacao").from("notas_pendencia")
+        .select("nota_id, pipe_deal_id, snapshot_id, motivo, nota")
+        .eq("tenant_id", tenantId).eq("ano_mes", ano_mes),
     ]);
 
     setFechamento(f);
@@ -124,6 +149,7 @@ export default function MesPage() {
     setRows(((cruzRows ?? []) as CruzamentoRow[]).filter((r) => !r.voomp_reembolsado));
     setUltimoImport((imp ?? null) as PipeImport | null);
     setSuspeitos((susp ?? []) as Suspeito[]);
+    setNotas((notasRes.data ?? []) as NotaPendencia[]);
     setLoading(false);
   }
 
@@ -251,6 +277,49 @@ export default function MesPage() {
     setLinkingCross(null);
     if (error) alert(friendlyError(error.message));
     else load();
+  }
+
+  function notaDaLinha(r: CruzamentoRow): NotaPendencia | null {
+    if (r.status_match === "ORFAO_PIPE" && r.pipe_deal_id != null) {
+      return notas.find((n) => n.pipe_deal_id === r.pipe_deal_id) ?? null;
+    }
+    if (r.status_match === "ORFAO_VOOMP" && r.snapshot_id != null) {
+      return notas.find((n) => n.snapshot_id === r.snapshot_id) ?? null;
+    }
+    return null;
+  }
+
+  function abrirJustificativa(r: CruzamentoRow) {
+    const existente = notaDaLinha(r);
+    setMotivoSel(existente?.motivo ?? "PAGAMENTO_NEGADO");
+    setNotaTexto(existente?.nota ?? "");
+    setJustificando(r);
+  }
+
+  async function salvarJustificativa() {
+    if (!justificando || !tenantId) return;
+    setSalvandoNota(true);
+    const existente = notaDaLinha(justificando);
+    const { data: { user } } = await supabase.auth.getUser();
+    const payload = {
+      motivo: motivoSel,
+      nota: notaTexto.trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = existente
+      ? await supabase.schema("conciliacao").from("notas_pendencia")
+          .update(payload).eq("nota_id", existente.nota_id)
+      : await supabase.schema("conciliacao").from("notas_pendencia").insert({
+          tenant_id: tenantId,
+          ano_mes,
+          pipe_deal_id: justificando.status_match === "ORFAO_PIPE" ? justificando.pipe_deal_id : null,
+          snapshot_id: justificando.status_match === "ORFAO_VOOMP" ? justificando.snapshot_id : null,
+          ...payload,
+          created_by: user?.id ?? null,
+        });
+    setSalvandoNota(false);
+    if (error) alert(friendlyError(error.message));
+    else { setJustificando(null); load(); }
   }
 
   async function exportarFechar() {
@@ -594,7 +663,10 @@ export default function MesPage() {
             <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground uppercase tracking-wide">Sem par</CardTitle></CardHeader>
             <CardContent>
               <p className="text-lg font-semibold tabular-nums">{fmtBRL(orfaosPipeValor + orfaosVoompValor)}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Pipe {fmtBRL(orfaosPipeValor)} · Voomp {fmtBRL(orfaosVoompValor)}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Pipe {fmtBRL(orfaosPipeValor)} · Voomp {fmtBRL(orfaosVoompValor)}
+                {notas.length > 0 ? ` · ${notas.length} justificada${notas.length !== 1 ? "s" : ""}` : ""}
+              </p>
             </CardContent>
           </Card>
 
@@ -714,6 +786,7 @@ export default function MesPage() {
                     <th className="py-2 pr-4 text-right">Diferença</th>
                     <th className="py-2 pr-4">Casou por</th>
                     <th className="py-2 pr-4">Avaliação</th>
+                    <th className="py-2 pr-4">Justificativa</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -760,11 +833,28 @@ export default function MesPage() {
                           )}
                         </div>
                       </td>
+                      <td className="py-2 pr-4">
+                        {r.status_match !== "CASADO" ? (() => {
+                          const nota = notaDaLinha(r);
+                          if (nota) {
+                            return (
+                              <button onClick={() => !fechado && abrirJustificativa(r)} title={nota.nota ?? ""}>
+                                <Badge variant="muted">✓ {MOTIVO_LABEL[nota.motivo] ?? nota.motivo}</Badge>
+                              </button>
+                            );
+                          }
+                          return !fechado ? (
+                            <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-muted-foreground" onClick={() => abrirJustificativa(r)}>
+                              Justificar
+                            </Button>
+                          ) : <span className="text-muted-foreground">—</span>;
+                        })() : <span className="text-muted-foreground">—</span>}
+                      </td>
                     </tr>
                   ))}
                   {filtered.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="py-8 text-center text-muted-foreground">
+                      <td colSpan={9} className="py-8 text-center text-muted-foreground">
                         Nenhum registro {busca ? `para "${busca}"` : "neste filtro"}.
                       </td>
                     </tr>
@@ -781,6 +871,56 @@ export default function MesPage() {
           <Link href={`/mes/${ano_mes}/conciliacao`}>
             <Button variant="outline"><AlertCircle className="h-4 w-4 mr-2" />Vincular manualmente os sem par</Button>
           </Link>
+        </div>
+      )}
+
+      {/* ── Modal de justificativa de pendência ───────────────────── */}
+      {justificando && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setJustificando(null)}>
+          <Card className="w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <CardHeader>
+              <CardTitle className="text-base">Justificar pendência</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                {justificando.status_match === "ORFAO_PIPE"
+                  ? `Deal ${justificando.pipe_deal_id} — ${justificando.pessoa_nome ?? "—"} (${fmtBRL(Number(justificando.pipe_valor ?? 0))})`
+                  : `Venda ${justificando.voomp_venda_id ?? "—"} — ${justificando.voomp_aluno_nome ?? "—"} (${fmtBRL(Number(justificando.voomp_valor_cobrado ?? 0))})`}
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div>
+                <label className="text-sm font-medium">Motivo</label>
+                <select
+                  value={motivoSel}
+                  onChange={(e) => setMotivoSel(e.target.value)}
+                  className="mt-1 h-9 w-full px-2 rounded-md border border-border text-sm bg-background"
+                >
+                  {Object.entries(MOTIVO_LABEL).map(([k, label]) => (
+                    <option key={k} value={k}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Detalhe (opcional)</label>
+                <textarea
+                  value={notaTexto}
+                  onChange={(e) => setNotaTexto(e.target.value)}
+                  placeholder="Ex.: pagamento negado no cartão do aluno; aprovado em 06/2026..."
+                  rows={3}
+                  className="mt-1 w-full px-3 py-2 rounded-md border border-border text-sm bg-background"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                A justificativa fica registrada com autor e data, aparece no relatório de
+                fechamento e trava junto com o mês.
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setJustificando(null)}>Cancelar</Button>
+                <Button onClick={salvarJustificativa} disabled={salvandoNota}>
+                  {salvandoNota ? "Salvando..." : "Salvar justificativa"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
     </div>
