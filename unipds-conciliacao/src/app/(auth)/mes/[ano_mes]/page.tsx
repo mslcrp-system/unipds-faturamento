@@ -143,10 +143,12 @@ export default function MesPage() {
     ]);
 
     setFechamento(f);
-    // Reembolsos ficam fora da tela de conciliação (decisão 2026-06-12):
-    // o valor exibido (parcela estornada) confunde a análise; o acompanhamento
-    // é feito na consulta própria de reembolsos e no relatório de fechamento.
-    setRows(((cruzRows ?? []) as CruzamentoRow[]).filter((r) => !r.voomp_reembolsado));
+    // Reembolsos saem da tela só quando são órfãos Voomp (ruído de estorno sem
+    // contrapartida no Pipe — ex. parcela estornada de R$500). Um deal CASADO
+    // cujo lado Voomp foi reembolsado é venda real do Pipe e PRECISA contar no
+    // total comercial — fica visível, com marcação de reembolso.
+    setRows(((cruzRows ?? []) as CruzamentoRow[])
+      .filter((r) => !(r.status_match === "ORFAO_VOOMP" && r.voomp_reembolsado)));
     setUltimoImport((imp ?? null) as PipeImport | null);
     setSuspeitos((susp ?? []) as Suspeito[]);
     setNotas((notasRes.data ?? []) as NotaPendencia[]);
@@ -352,23 +354,24 @@ export default function MesPage() {
   // ── Derivados ────────────────────────────────────────────────────
 
   const pipeCount   = rows.filter((r) => r.pipe_valor != null).length;
-  const voompCount  = rows.filter((r) => r.voomp_valor_cobrado != null).length;
+  // Voomp gerencial: só vendas válidas (exclui o estorno dos casados-reembolsados)
+  const voompCount  = rows.filter((r) => r.voomp_valor_cobrado != null && !r.voomp_reembolsado).length;
   const casados     = rows.filter((r) => r.status_match === "CASADO");
   const orfaosPipeCount        = rows.filter((r) => r.status_match === "ORFAO_PIPE").length;
   const orfaosVoompAtivosCount = rows.filter((r) => r.status_match === "ORFAO_VOOMP").length;
 
   const totalPipe           = rows.reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
-  const totalVoompGerencial = rows.reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
+  const totalVoompGerencial = rows.filter((r) => !r.voomp_reembolsado).reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
   const casadosPipe         = casados.reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
-  const casadosVoomp        = casados.reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
+  const casadosVoomp        = casados.filter((r) => !r.voomp_reembolsado).reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
   const orfaosPipeValor     = rows.filter((r) => r.status_match === "ORFAO_PIPE").reduce((s, r) => s + (r.pipe_valor ?? 0), 0);
   const orfaosVoompValor    = rows.filter((r) => r.status_match === "ORFAO_VOOMP").reduce((s, r) => s + (r.voomp_valor_cobrado ?? 0), 0);
   const difPipeVoomp        = totalPipe - totalVoompGerencial;
   // Sentinela de comissão: excesso = soma das divergências líquidas positivas nos casados
   const excessoComissao     = casados.reduce((s, r) => s + Math.max(0, r.divergencia_liquido ?? 0), 0);
   const registroBrutoCount  = rows.filter((r) => r.registro_bruto).length;
-  // Taxa da fotografia = bruto cheio − líquido cheio
-  const totalTaxas          = rows
+  // Taxa da fotografia = bruto cheio − líquido cheio (só vendas válidas)
+  const totalTaxas          = rows.filter((r) => !r.voomp_reembolsado)
     .reduce((s, r) => s + Math.max(0, (r.voomp_valor_bruto ?? r.voomp_valor_cobrado ?? 0) - (r.voomp_valor_cobrado ?? 0)), 0);
 
   const linksPorCriterio = useMemo(() => {
@@ -431,7 +434,11 @@ export default function MesPage() {
       const outro = tenantById(r.voomp_tenant_id)?.curto ?? "outro";
       return <Badge variant="destructive" title={`Deal fechado no funil errado — aluno pertence ao tenant ${outro}`}>Outro tenant ({outro})</Badge>;
     }
-    if (r.status_match === "CASADO") return <Badge variant="success">Conciliado</Badge>;
+    if (r.status_match === "CASADO") {
+      return r.voomp_reembolsado
+        ? <Badge variant="warning" title="Deal conciliado — pagamento Voomp reembolsado depois. Conta no Pipe; fora do total Voomp gerencial.">Conciliado · reemb. ↩</Badge>
+        : <Badge variant="success">Conciliado</Badge>;
+    }
     if (r.status_match === "ORFAO_PIPE") return <Badge variant="warning" title="Deal no Pipe sem venda Voomp correspondente">Só no Pipe</Badge>;
     return <Badge variant="warning" title="Venda na Voomp sem deal no Pipe">Só na Voomp</Badge>;
   }
