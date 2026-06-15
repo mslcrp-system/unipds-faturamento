@@ -821,8 +821,14 @@ export default function MesPage() {
                         )}
                       </td>
                       <td className="py-2 pr-4 text-right tabular-nums">{r.pipe_valor != null ? fmtBRL(Number(r.pipe_valor)) : "—"}</td>
-                      <td className="py-2 pr-4 text-right tabular-nums">{r.voomp_valor_cobrado != null ? fmtBRL(Number(r.voomp_valor_cobrado)) : "—"}</td>
-                      <td className="py-2 pr-4 text-right tabular-nums">{r.divergencia_valor != null ? fmtBRL(Number(r.divergencia_valor)) : "—"}</td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        {r.voomp_reembolsado
+                          ? <span className="text-muted-foreground" title="Venda estornada — valor cobrado é bruto financiado, não o faturamento. Fora do total gerencial.">estornado</span>
+                          : r.voomp_valor_cobrado != null ? fmtBRL(Number(r.voomp_valor_cobrado)) : "—"}
+                      </td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        {r.voomp_reembolsado ? "—" : r.divergencia_valor != null ? fmtBRL(Number(r.divergencia_valor)) : "—"}
+                      </td>
                       <td className="py-2 pr-4">
                         {r.criterio ? `${CRITERIO_LABEL[r.criterio] ?? r.criterio}${r.confianca ? ` (${r.confianca}%)` : ""}` : "—"}
                       </td>
