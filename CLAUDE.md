@@ -23,3 +23,14 @@ Não peça por conversa: o pedido escrito é o que explica, um ano depois, por q
 existe.
 
 A regra completa está em `unipds-banco/CLAUDE.md`.
+
+---
+
+## Como este repo se chama em cada lugar
+
+- No disco: `unipds-faturamento`
+- No GitHub: `mslcrp-system/unipds-faturamento`
+- No Vercel: `unipds-fat-conc`
+
+Os nomes divergem entre as camadas em metade do grupo — o de-para completo está em
+`unipds-banco/CLAUDE.md`.
